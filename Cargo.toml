@@ -1,0 +1,13 @@
+[package]
+name = "quickhull"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Joona Aalto <jondolf.dev@gmail.com>"]
+description = "Quickhull algorithm for computing convex hulls."
+readme = "README.md"
+keywords = ["convex", "hull", "geo", "geometry"]
+categories = ["algorithms", "mathematics", "game-development"]
+
+[dependencies]
+glam = "0.28"
