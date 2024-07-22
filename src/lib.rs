@@ -12,7 +12,7 @@
 
 #![warn(missing_docs)]
 
-use glam::{DMat4, DVec3, DVec4};
+use glam::{DMat4, DVec3};
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
@@ -20,24 +20,25 @@ use std::fmt;
 
 /// A polygonal face belonging to a [`ConvexHull`].
 #[derive(Debug, Clone)]
-struct Face {
+pub struct Face {
     /// The indices of the face's points.
-    indices: Vec<usize>,
+    pub indices: Vec<usize>,
     /// The indices of points in front of the face plane, or the points that can "see" the face,
     /// and the distance to each of those points along the normal.
-    outside_points: Vec<(usize, f64)>,
+    pub outside_points: Vec<(usize, f64)>,
     /// The indices of neighboring faces.
-    neighbor_faces: Vec<usize>,
+    pub neighbor_faces: Vec<usize>,
     /// The normal of the face.
-    normal: DVec3,
+    pub normal: DVec3,
     /// How far away from the origin this face is along its normal.
-    distance_from_origin: f64,
+    pub distance_from_origin: f64,
 }
 
 impl Face {
-    fn new(points: &[DVec3], indices: [usize; 3]) -> Self {
+    /// Creates a [`Face`] using the `points` with the given `indices`.
+    pub fn from_triangle(points: &[DVec3], indices: [usize; 3]) -> Self {
         let points_of_face = indices.map(|i| points[i]);
-        let normal = face_normal(points_of_face);
+        let normal = triangle_normal(points_of_face);
         let origin = normal.dot(points_of_face[0]);
 
         Self {
@@ -104,25 +105,30 @@ impl ConvexHull {
     /// Attempts to compute a [`ConvexHull`] for the given set of points.
     pub fn try_new(
         points: &[DVec3],
-        threshold: impl Into<f64>,
+        tolerance: impl Into<Option<f64>>,
         max_iter: Option<usize>,
     ) -> Result<Self, ErrorKind> {
-        let threshold = threshold.into();
         let num_points = points.len();
 
         if num_points == 0 {
             return Err(ErrorKind::Empty);
         }
 
-        if num_points <= 3 || is_degenerate(points, threshold) {
+        if num_points <= 3 {
             return Err(ErrorKind::Degenerated);
         }
 
+        let ((min_point, min_indices), (max_point, max_indices)) = Self::compute_extremes(points);
+
+        let tolerance = tolerance
+            .into()
+            .unwrap_or(Self::tolerance(min_point, max_point));
+
         // Create the initial simplex, a tetrahedron in 3D.
-        let mut c_hull = Self::create_simplex(points, threshold)?;
+        let mut c_hull = Self::init_tetrahedron(points, min_indices, max_indices, tolerance)?;
 
         // Run the main quick hull algorithm.
-        c_hull.update(threshold, max_iter)?;
+        c_hull.update(tolerance, max_iter)?;
 
         // Shrink the hull, removing unused points.
         c_hull.remove_unused_points();
@@ -130,64 +136,13 @@ impl ConvexHull {
         if c_hull.points.len() <= 3 {
             return Err(ErrorKind::Degenerated);
         }
+
         Ok(c_hull)
     }
 
-    fn create_simplex(points: &[DVec3], threshold: f64) -> Result<Self, ErrorKind> {
-        let indices_set = Self::select_vertices_for_simplex(points)?;
-        let mut faces = BTreeMap::new();
-
-        let mut face_add_count = 0;
-
-        #[allow(clippy::explicit_counter_loop)]
-        for i_face in 0..4 {
-            let mut face_indices = Vec::new();
-            // create face
-            for (j, set) in indices_set.iter().enumerate().take(4) {
-                if j != i_face {
-                    face_indices.push(*set);
-                }
-            }
-            let mut face = Face::new(points, face_indices.try_into().unwrap());
-
-            // Check the order of the face's vertices.
-            let rem_point = indices_set[i_face];
-            let pos = position_from_face(points, &face, rem_point);
-            if pos > threshold {
-                face.indices.swap(0, 1);
-                face.normal = -face.normal;
-                face.distance_from_origin = -face.distance_from_origin;
-            }
-            if face.indices.len() != 3 {
-                return Err(ErrorKind::RoundOffError(
-                    "number of face's vertices should be 3".to_string(),
-                ));
-            }
-            faces.insert(face_add_count, face);
-            face_add_count += 1;
-        }
-
-        // Link neighbors.
-        let simplex_face_key: Vec<_> = faces.keys().copied().collect();
-        for (key, face) in &mut faces.iter_mut() {
-            face.outside_points
-                .sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap());
-            for neighbors_key in simplex_face_key
-                .iter()
-                .filter(|neighbor_key| *neighbor_key != key)
-            {
-                face.neighbor_faces.push(*neighbors_key);
-            }
-        }
-        let simplex = Self {
-            points: points.to_vec(),
-            faces,
-        };
-
-        Ok(simplex)
-    }
-
-    fn compute_min_and_max(points: &[DVec3]) -> ((DVec3, [usize; 3]), (DVec3, [usize; 3])) {
+    /// Computes the minimum and maximum extents for the given point set, along with
+    /// the indices of the minimum and maximum vertices along each coordinate axis.
+    fn compute_extremes(points: &[DVec3]) -> ((DVec3, [usize; 3]), (DVec3, [usize; 3])) {
         let mut min = points[0];
         let mut max = points[0];
 
@@ -227,25 +182,195 @@ impl ConvexHull {
         3.0 * f64::EPSILON * max.abs().max(min.abs()).element_sum()
     }
 
-    fn update(&mut self, threshold: f64, max_iter: Option<usize>) -> Result<(), ErrorKind> {
-        let mut face_add_count = *self.faces.iter().last().map(|(k, _v)| k).unwrap() + 1;
+    fn init_tetrahedron(
+        points: &[DVec3],
+        min_indices: [usize; 3],
+        max_indices: [usize; 3],
+        tolerance: f64,
+    ) -> Result<Self, ErrorKind> {
+        // Get the indices of the vertices used for the initial tetrahedron.
+        let indices_set =
+            Self::init_tetrahedron_indices(points, min_indices, max_indices, tolerance)?;
+
+        let mut faces = BTreeMap::new();
+
+        #[allow(clippy::explicit_counter_loop)]
+        for i_face in 0..4 {
+            let mut face_indices = Vec::new();
+            // create face
+            for (j, index) in indices_set.iter().enumerate() {
+                if j != i_face {
+                    face_indices.push(*index);
+                }
+            }
+            let mut face = Face::from_triangle(points, face_indices.try_into().unwrap());
+
+            // Check the order of the face's vertices.
+            let rem_point = indices_set[i_face];
+            let pos = position_from_face(points, &face, rem_point);
+            if pos > tolerance {
+                face.indices.swap(0, 1);
+                face.normal = -face.normal;
+                face.distance_from_origin = -face.distance_from_origin;
+            }
+            if face.indices.len() != 3 {
+                return Err(ErrorKind::RoundOffError(
+                    "number of face's vertices should be 3".to_string(),
+                ));
+            }
+            faces.insert(i_face, face);
+        }
+
+        // Link neighbors.
+        let simplex_face_key: Vec<_> = faces.keys().copied().collect();
+        for (key, face) in &mut faces.iter_mut() {
+            for neighbors_key in simplex_face_key
+                .iter()
+                .filter(|neighbor_key| *neighbor_key != key)
+            {
+                face.neighbor_faces.push(*neighbors_key);
+            }
+        }
+
+        let simplex = Self {
+            points: points.to_vec(),
+            faces,
+        };
+
+        Ok(simplex)
+    }
+
+    /// Computes the indices for the initial tetrahdron built from the given
+    /// `points` and the indices of the extreme points along each axis.
+    fn init_tetrahedron_indices(
+        points: &[DVec3],
+        min_indices: [usize; 3],
+        max_indices: [usize; 3],
+        tolerance: f64,
+    ) -> Result<[usize; 4], ErrorKind> {
+        let mut indices = [0; 4];
+
+        // If there are only at most four points, return a degenerate tetrahedron.
+        if points.len() <= 4 {
+            indices = [
+                0,
+                1.min(points.len() - 1),
+                2.min(points.len() - 1),
+                3.min(points.len() - 1),
+            ];
+            let normal =
+                triangle_normal([points[indices[0]], points[indices[1]], points[indices[2]]]);
+
+            // Enforce CCW orientation.
+            if is_on_positive_side(points[indices[3]], normal, normal.dot(points[indices[0]])) {
+                indices.swap(1, 0);
+            }
+
+            return Ok(indices);
+        }
+
+        // The maximum one-dimensional extent of the point-cloud, and the index
+        // corresponding to that dimension (x = 0, y = 1, z = 2).
+        let mut max_extent = 0.0;
+        let mut max_dimension_index = 0;
+
+        for i in 0..3 {
+            let extent = points[max_indices[i]][i] - points[min_indices[i]][i];
+            if extent > max_extent {
+                max_extent = extent;
+                max_dimension_index = i;
+            }
+        }
+
+        if max_extent <= tolerance {
+            // The point cloud seems to consist of a single point.
+            return Err(ErrorKind::DegenerateInput(DegenerateInput::Coincident));
+        }
+
+        // The first two vertices are the ones farthest apart in the maximum dimension.
+        indices[0] = max_indices[max_dimension_index];
+        indices[1] = min_indices[max_dimension_index];
+
+        // The third vertex should be the one farthest from the line segment
+        // between the first two vertices.
+        let unit_01 = (points[indices[1]] - points[indices[0]]).normalize();
+        let mut normal = DVec3::ZERO;
+
+        let mut max_squared_distance = 0.0;
+
+        for i in 0..points.len() {
+            let diff = points[i] - points[indices[0]];
+            let cross = unit_01.cross(diff);
+            let distance_squared = cross.length_squared();
+
+            if distance_squared > max_squared_distance
+                && points[i] != points[indices[0]]
+                && points[i] != points[indices[1]]
+            {
+                max_squared_distance = distance_squared;
+                indices[2] = i;
+                normal = cross;
+            }
+        }
+
+        if max_squared_distance <= (100.0 * tolerance).powi(2) {
+            return Err(ErrorKind::DegenerateInput(DegenerateInput::Collinear));
+        }
+
+        normal = normal.normalize();
+
+        // Recompute the normal to make sure it is perpendicular to unit_10.
+        normal = (normal - normal.dot(unit_01) * unit_01).normalize();
+
+        // We now have a base triangle. The fourth vertex should be the one farthest
+        // from the triangle along the normal.
+        let mut max_distance = 0.0;
+        let d0 = points[indices[2]].dot(normal);
+
+        for i in 0..points.len() {
+            let distance = (points[i].dot(normal) - d0).abs();
+
+            if distance > max_distance
+                && points[i] != points[indices[0]]
+                && points[i] != points[indices[1]]
+                && points[i] != points[indices[2]]
+            {
+                max_distance = distance;
+                indices[3] = i;
+            }
+        }
+
+        if max_distance.abs() <= 100.0 * tolerance {
+            return Err(ErrorKind::DegenerateInput(DegenerateInput::Coplanar));
+        }
+
+        Ok(indices)
+    }
+
+    fn update(&mut self, tolerance: f64, max_iter: Option<usize>) -> Result<(), ErrorKind> {
+        let mut face_add_count = *self.faces.keys().last().unwrap() + 1;
         let mut num_iter = 0;
         let mut assigned_point_indices: HashSet<usize> = HashSet::new();
 
+        // Mark the points of the faces as assigned.
         for face in self.faces.values() {
             for index in &face.indices {
                 assigned_point_indices.insert(*index);
             }
         }
 
-        // Initialize the outside points.
+        // Initialize the outside points, sometimes called "conflict lists".
+        // They are outside the current hull, but can "see" some faces and therefore could be on the final hull.
         for (_key, face) in &mut self.faces.iter_mut() {
             for (i, _point) in self.points.iter().enumerate() {
                 if assigned_point_indices.contains(&i) {
                     continue;
                 }
+
                 let pos = position_from_face(&self.points, face, i);
-                if pos > threshold {
+
+                // If the point can "see" the face, add it to the face's list of outside points.
+                if pos > tolerance {
                     face.outside_points.push((i, pos));
                 }
             }
@@ -258,6 +383,15 @@ impl ConvexHull {
         };
 
         // The main algorithm of quick hull.
+        //
+        // For each face that has outside points:
+        //
+        // 1. Find the outside point that is farthest from the face, the "eye point".
+        // 2. Find the "horizon", the vertices that form the boundary between the visible
+        //    and non-visible parts of the current hull from the viewpoint of the eye point.
+        // 3. Create faces connecting the horizon vertices to the eye point.
+        // 4. Assign the orphaned vertices to the new faces, and remove the old faces.
+        // 5. Repeat.
         while let Some((key, face)) = self
             .faces
             .iter()
@@ -280,13 +414,13 @@ impl ConvexHull {
                 &self.faces,
                 key,
                 face,
-                threshold,
+                tolerance,
             );
 
             // Get the horizon.
-            let horizon = get_horizon(&visible_set, &self.faces)?;
+            let horizon = compute_horizon(&visible_set, &self.faces)?;
 
-            // Create new face.
+            // Create new faces connecting the horizon vertices to the furthest point.
             let mut new_keys = Vec::new();
             for (ridge, unvisible) in horizon {
                 let mut new_face = vec![furthest_point_index];
@@ -304,7 +438,7 @@ impl ConvexHull {
                     ));
                 }
 
-                let mut new_face = Face::new(&self.points, new_face.try_into().unwrap());
+                let mut new_face = Face::from_triangle(&self.points, new_face.try_into().unwrap());
                 new_face.neighbor_faces.push(unvisible);
 
                 let new_key = face_add_count;
@@ -322,7 +456,7 @@ impl ConvexHull {
                 ));
             }
 
-            // Link the face to its neighbor.
+            // Link the faces to their neighbors.
             for (i, key_a) in new_keys.iter().enumerate() {
                 let points_of_new_face_a: HashSet<_> = self
                     .faces
@@ -374,7 +508,7 @@ impl ConvexHull {
                     let position =
                         position_from_face(&self.points, new_face, *assigned_point_index);
 
-                    if position <= threshold && position >= -threshold {
+                    if position <= tolerance && position >= -tolerance {
                         continue;
                     } else if position > 0.0 {
                         let new_face = self.faces.get_mut(new_key).unwrap();
@@ -394,7 +528,7 @@ impl ConvexHull {
                 }
             }
 
-            // Set outside points for each new face.
+            // Assign the orphaned vertices to the new faces.
             let mut visible_faces = Vec::new();
             for visible in &visible_set {
                 visible_faces.push(self.faces.get(visible).unwrap().clone());
@@ -415,7 +549,7 @@ impl ConvexHull {
                         checked_point_set.insert(outside_point_index);
 
                         let pos = position_from_face(&self.points, new_face, *outside_point_index);
-                        if pos > threshold {
+                        if pos > tolerance {
                             new_face.outside_points.push((*outside_point_index, pos));
                         }
                     }
@@ -426,7 +560,7 @@ impl ConvexHull {
                     .sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap());
             }
 
-            // Delete the visible faces.
+            // Delete the old visible faces.
             for visible in visible_set {
                 let visible_face = self.faces.get(&visible).unwrap().clone();
                 for neighbor_key in visible_face.neighbor_faces {
@@ -444,7 +578,7 @@ impl ConvexHull {
             }
         }
 
-        if !self.is_convex(threshold) {
+        if !self.is_convex(tolerance) {
             return Err(ErrorKind::RoundOffError("concave".to_string()));
         }
 
@@ -455,12 +589,12 @@ impl ConvexHull {
     pub fn add_points(
         &mut self,
         points: &[DVec3],
-        threshold: impl Into<f64>,
+        tolerance: impl Into<f64>,
     ) -> Result<(), ErrorKind> {
-        let threshold = threshold.into();
+        let tolerance = tolerance.into();
 
         self.points.append(&mut points.to_vec());
-        self.update(threshold, None)?;
+        self.update(tolerance, None)?;
         self.remove_unused_points();
 
         if self.points.len() <= 3 {
@@ -541,10 +675,10 @@ impl ConvexHull {
         volume / factorial
     }
 
-    /// Checks if the convex hull is convex with the given threshold.
-    fn is_convex(&self, threshold: f64) -> bool {
+    /// Checks if the convex hull is convex with the given tolerance.
+    fn is_convex(&self, tolerance: f64) -> bool {
         for face in self.faces.values() {
-            if position_from_face(&self.points, face, 0) > threshold {
+            if position_from_face(&self.points, face, 0) > tolerance {
                 return false;
             }
         }
@@ -566,108 +700,19 @@ impl ConvexHull {
 
         self.points[index]
     }
-
-    fn select_vertices_for_simplex(points: &[DVec3]) -> Result<[usize; 4], ErrorKind> {
-        // Find the minimum and maximum points of the bounding box and the indices
-        // of the minimum and maximum points for each individual axis.
-        let ((min_point, per_axis_min_indices), (max_point, per_axis_max_indices)) =
-            Self::compute_min_and_max(points);
-        let mut indices = [0; 4];
-
-        let threshold = Self::tolerance(min_point, max_point);
-
-        let mut max_difference = 0.0;
-        let mut max_index = 0;
-
-        for i in 0..3 {
-            let difference =
-                points[per_axis_max_indices[i]][i] - points[per_axis_min_indices[i]][i];
-            if difference > max_difference {
-                max_difference = difference;
-                max_index = i;
-            }
-        }
-
-        if max_difference <= threshold {
-            return Err(ErrorKind::DegenerateInput(DegenerateInput::Coincident));
-        }
-
-        // The first two vertices are the ones farthest apart in one dimension.
-        indices[0] = per_axis_max_indices[max_index];
-        indices[1] = per_axis_min_indices[max_index];
-
-        // The third vertex should be the one farthest from the line segment
-        // between the first two vertices.
-        let unit_01 = (points[indices[1]] - points[indices[0]]).normalize();
-        let mut normal = DVec3::ZERO;
-
-        let mut max_squared_distance = 0.0;
-
-        for i in 0..points.len() {
-            let diff = points[i] - points[indices[0]];
-            let cross = unit_01.cross(diff);
-            let distance_squared = cross.length_squared();
-
-            if distance_squared > max_squared_distance
-                && points[i] != points[indices[0]]
-                && points[i] != points[indices[1]]
-            {
-                max_squared_distance = distance_squared;
-                indices[2] = i;
-                normal = cross;
-            }
-        }
-
-        if max_squared_distance <= (100.0 * threshold).powi(2) {
-            return Err(ErrorKind::DegenerateInput(DegenerateInput::Collinear));
-        }
-
-        normal = normal.normalize();
-
-        // Recompute the normal to make sure it is perpendicular to unit_10.
-        normal = (normal - normal.dot(unit_01) * unit_01).normalize();
-
-        let mut max_distance = 0.0;
-        let d0 = points[indices[2]].dot(normal);
-
-        for i in 0..points.len() {
-            let distance = (points[i].dot(normal) - d0).abs();
-
-            if distance > max_distance
-                && points[i] != points[indices[0]]
-                && points[i] != points[indices[1]]
-                && points[i] != points[indices[2]]
-            {
-                max_distance = distance;
-                indices[3] = i;
-            }
-        }
-
-        if max_distance.abs() <= 100.0 * threshold {
-            return Err(ErrorKind::DegenerateInput(DegenerateInput::Coplanar));
-        }
-
-        if indices.len() != 4 {
-            return Err(ErrorKind::RoundOffError(
-                "number of simplex's vertices should be 4".to_string(),
-            ));
-        }
-
-        Ok(indices)
-    }
 }
 
-// get visible face viewed from furthest point
+// Computes the indices of the faces that are visible from the point farthest from the given `face`.
 fn initialize_visible_set(
     points: &[DVec3],
     furthest_point_index: usize,
     faces: &BTreeMap<usize, Face>,
-    faset_key: usize,
+    face_key: usize,
     face: &Face,
-    threshold: f64,
+    tolerance: f64,
 ) -> HashSet<usize> {
     let mut visible_set = HashSet::new();
-    visible_set.insert(faset_key);
+    visible_set.insert(face_key);
     let mut neighbor_stack: Vec<_> = face.neighbor_faces.to_vec();
     let mut visited_neighbor = HashSet::new();
     while let Some(neighbor_key) = neighbor_stack.pop() {
@@ -679,7 +724,7 @@ fn initialize_visible_set(
 
         let neighbor = faces.get(&neighbor_key).unwrap();
         let pos = position_from_face(points, neighbor, furthest_point_index);
-        if pos > threshold {
+        if pos > tolerance {
             visible_set.insert(neighbor_key);
             neighbor_stack.append(&mut neighbor.neighbor_faces.to_vec());
         }
@@ -687,7 +732,8 @@ fn initialize_visible_set(
     visible_set
 }
 
-fn get_horizon(
+/// Tries to computes the horizon represented as a vector of ridges and the keys of their neighbors.
+fn compute_horizon(
     visible_set: &HashSet<usize>,
     faces: &BTreeMap<usize, Face>,
 ) -> Result<Vec<(Vec<usize>, usize)>, ErrorKind> {
@@ -733,37 +779,17 @@ fn get_horizon(
 }
 
 fn position_from_face(points: &[DVec3], face: &Face, point_index: usize) -> f64 {
-    // TODO: Use `robust`
     let origin = face.distance_from_origin;
     let pos = face.normal.dot(points[point_index]);
     pos - origin
 }
 
-fn is_degenerate(points: &[DVec3], threshold: f64) -> bool {
-    let ex_vec: Vec<DVec4> = points.iter().map(|v| v.extend(1.0)).collect();
-    let num = ex_vec.len();
-    if num <= 3 {
-        return true;
-    }
-    let mut mat = DMat4::ZERO;
-    for i in 0..4 {
-        let mut row = DVec4::ZERO;
-        for j in 0..4 {
-            let mut c = 0.0;
-            for vec in ex_vec.iter() {
-                c += vec[i] * vec[j];
-            }
-            row[j] = c;
-        }
-        mat.x_axis[i] = row.x;
-        mat.y_axis[i] = row.y;
-        mat.z_axis[i] = row.z;
-        mat.w_axis[i] = row.w;
-    }
-    mat.determinant() <= threshold && mat.determinant() >= -threshold
+fn is_on_positive_side(point: DVec3, normal: DVec3, plane_distance: f64) -> bool {
+    normal.dot(point) + plane_distance >= 0.0
 }
 
-fn face_normal([a, b, c]: [DVec3; 3]) -> DVec3 {
+/// Computes the normal of a triangle face with a counterclockwise orientation.
+fn triangle_normal([a, b, c]: [DVec3; 3]) -> DVec3 {
     let ab = b - a;
     let ac = c - a;
     ab.cross(ac)
@@ -774,19 +800,19 @@ fn face_normal_test() {
     let p1 = DVec3::new(-1.0, 0.0, 0.0);
     let p2 = DVec3::new(1.0, 0.0, 0.0);
     let p3 = DVec3::new(0.0, 1.0, 0.0);
-    let normal_z = face_normal([p1, p2, p3]);
+    let normal_z = triangle_normal([p1, p2, p3]);
     assert_eq!(normal_z, DVec3::new(0.0, 0.0, 2.0));
 
     let p1 = DVec3::new(0.0, -1.0, 0.0);
     let p2 = DVec3::new(0.0, 1.0, 0.0);
     let p3 = DVec3::new(0.0, 0.0, 1.0);
-    let normal_x = face_normal([p1, p2, p3]);
+    let normal_x = triangle_normal([p1, p2, p3]);
     assert_eq!(normal_x, DVec3::new(2.0, 0.0, 0.0));
 
     let p1 = DVec3::new(0.0, 0.0, -1.0);
     let p2 = DVec3::new(0.0, 0.0, 1.0);
     let p3 = DVec3::new(1.0, 0.0, 0.0);
-    let normal_y = face_normal([p1, p2, p3]);
+    let normal_y = triangle_normal([p1, p2, p3]);
     assert_eq!(normal_y, DVec3::new(0.0, 2.0, 0.0));
 }
 
@@ -799,7 +825,7 @@ fn inner_outer_test() {
     let inner_point = DVec3::new(0.0, 0.0, 0.0);
     let whithin_point = DVec3::new(1.0, 0.0, 0.0);
     let points = vec![p1, p2, p3, outer_point, inner_point, whithin_point];
-    let face = Face::new(&points, [0, 1, 2]);
+    let face = Face::from_triangle(&points, [0, 1, 2]);
     let outer = position_from_face(&points, &face, 3);
     assert!(outer > 0.0);
     let inner = position_from_face(&points, &face, 4);
@@ -885,7 +911,6 @@ fn cube_support_point_test() {
 }
 
 #[test]
-#[should_panic(expected = "Degenerated")]
 fn flat_test() {
     let p1 = DVec3::new(1.0, 1.0, 10.0);
     let p2 = DVec3::new(1.0, 1.0, 10.0);
@@ -895,9 +920,10 @@ fn flat_test() {
     let p6 = DVec3::new(-1.0, 1.0, 10.0);
     let p7 = DVec3::new(-1.0, -1.0, 10.0);
     let p8 = DVec3::new(-1.0, -1.0, 10.0);
-    let (_v, _i) = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], 0.001, None)
-        .unwrap()
-        .vertices_indices();
+    assert!(
+        ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], 0.001, None)
+            .is_err_and(|err| err == ErrorKind::DegenerateInput(DegenerateInput::Coplanar))
+    );
 }
 
 #[test]
@@ -1007,15 +1033,4 @@ fn heavy_sphere_test() {
     let (_v, _i) = ConvexHull::try_new(&points, 0.001, None)
         .unwrap()
         .vertices_indices();
-}
-
-#[test]
-fn is_degenerate_test() {
-    let points = vec![
-        DVec3::new(1., 0., 0.),
-        DVec3::new(0., 0., 0.),
-        DVec3::new(0., 1., 0.),
-        DVec3::new(1., 0., 1.),
-    ];
-    assert!(!is_degenerate(&points, 0.00001));
 }

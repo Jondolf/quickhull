@@ -10,4 +10,7 @@ keywords = ["convex", "hull", "geo", "geometry"]
 categories = ["algorithms", "mathematics", "game-development"]
 
 [dependencies]
-glam = "0.28"
+glam = "0.27"
+
+[dev-dependencies]
+bevy = "0.14"
