@@ -1004,7 +1004,12 @@ fn sphere_test() {
 }
 
 #[test]
-fn heavy_sphere_test() {
+fn heavy_sea_urchin_test() {
+    use rand::prelude::{Distribution, SeedableRng, SliceRandom};
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(2);
+    let dist = rand::distributions::Standard;
+
     fn rot_z(point: DVec3, angle: f64) -> DVec3 {
         let e1 = angle.cos() * point[0] - angle.sin() * point[1];
         let e2 = angle.sin() * point[0] + angle.cos() * point[1];
@@ -1026,10 +1031,13 @@ fn heavy_sphere_test() {
         for step_z in 0..dev {
             let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / dev as f64);
             let p = rot_z(p, angle_z);
-            points.push(p);
+            let rand_offset: f64 = dist.sample(&mut rng);
+            points.push(p * rand_offset);
         }
     }
-    let (_v, _i) = ConvexHull::try_new(&points, 0.001, None)
+
+    points.shuffle(&mut rng);
+    let (_v, _i) = ConvexHull::try_new(&points, 0.004, None)
         .unwrap()
         .vertices_indices();
 }
