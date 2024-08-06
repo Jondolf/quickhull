@@ -778,10 +778,31 @@ fn compute_horizon(
     Ok(horizon)
 }
 
+trait ToRobust {
+    fn to_robust(self) -> robust::Coord3D<f64>;
+}
+
+impl ToRobust for glam::DVec3 {
+    fn to_robust(self) -> robust::Coord3D<f64> {
+        let DVec3 { x, y, z } = self;
+        robust::Coord3D { x, y, z }
+    }
+}
+
 fn position_from_face(points: &[DVec3], face: &Face, point_index: usize) -> f64 {
-    let origin = face.distance_from_origin;
-    let pos = face.normal.dot(points[point_index]);
-    pos - origin
+    let face_points = face
+        .indices
+        .iter()
+        .copied()
+        .map(|i| points[i])
+        .collect::<Vec<_>>();
+
+    -robust::orient3d(
+        face_points[0].to_robust(),
+        face_points[1].to_robust(),
+        face_points[2].to_robust(),
+        points[point_index].to_robust(),
+    )
 }
 
 fn is_on_positive_side(point: DVec3, normal: DVec3, plane_distance: f64) -> bool {
