@@ -1024,41 +1024,49 @@ fn sphere_test() {
         .vertices_indices();
 }
 
+/// Useful for fuzzing and profiling
+/// creates a sea-urchin like point cloud
+/// with points distributed arbitrarily within a sphere
 #[test]
 fn heavy_sea_urchin_test() {
     use rand::prelude::{Distribution, SeedableRng, SliceRandom};
 
-    let mut rng = rand::rngs::StdRng::seed_from_u64(2);
-    let dist = rand::distributions::Standard;
+    // increase this this to ~1000 to gather more samples for a sampling profiler
+    let iterations = 1;
 
-    fn rot_z(point: DVec3, angle: f64) -> DVec3 {
-        let e1 = angle.cos() * point[0] - angle.sin() * point[1];
-        let e2 = angle.sin() * point[0] + angle.cos() * point[1];
-        let e3 = point[2];
-        DVec3::new(e1, e2, e3)
-    }
-    fn rot_x(point: DVec3, angle: f64) -> DVec3 {
-        let e1 = point[0];
-        let e2 = angle.cos() * point[1] - angle.sin() * point[2];
-        let e3 = angle.sin() * point[1] + angle.cos() * point[2];
-        DVec3::new(e1, e2, e3)
-    }
-    let mut points = Vec::new();
-    let dev = 100;
-    let unit_y = DVec3::Y;
-    for step_x in 0..dev {
-        let angle_x = 2.0 * std::f64::consts::PI * (step_x as f64 / dev as f64);
-        let p = rot_x(unit_y, angle_x);
-        for step_z in 0..dev {
-            let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / dev as f64);
-            let p = rot_z(p, angle_z);
-            let rand_offset: f64 = dist.sample(&mut rng);
-            points.push(p * rand_offset);
+    for s in 0..iterations {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(s);
+        let dist = rand::distributions::Standard;
+
+        fn rot_z(point: DVec3, angle: f64) -> DVec3 {
+            let e1 = angle.cos() * point[0] - angle.sin() * point[1];
+            let e2 = angle.sin() * point[0] + angle.cos() * point[1];
+            let e3 = point[2];
+            DVec3::new(e1, e2, e3)
         }
-    }
+        fn rot_x(point: DVec3, angle: f64) -> DVec3 {
+            let e1 = point[0];
+            let e2 = angle.cos() * point[1] - angle.sin() * point[2];
+            let e3 = angle.sin() * point[1] + angle.cos() * point[2];
+            DVec3::new(e1, e2, e3)
+        }
+        let mut points = Vec::new();
+        let dev = 100;
+        let unit_y = DVec3::Y;
+        for step_x in 0..dev {
+            let angle_x = 2.0 * std::f64::consts::PI * (step_x as f64 / dev as f64);
+            let p = rot_x(unit_y, angle_x);
+            for step_z in 0..dev {
+                let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / dev as f64);
+                let p = rot_z(p, angle_z);
+                let rand_offset: f64 = dist.sample(&mut rng);
+                points.push(p * rand_offset);
+            }
+        }
 
-    points.shuffle(&mut rng);
-    let (_v, _i) = ConvexHull::try_new(&points, 0.004, None)
-        .unwrap()
-        .vertices_indices();
+        points.shuffle(&mut rng);
+        let (_v, _i) = ConvexHull::try_new(&points, 0.0, None)
+            .unwrap()
+            .vertices_indices();
+    }
 }
