@@ -114,10 +114,8 @@ impl ConvexHull {
             return Err(ErrorKind::Degenerated);
         }
 
-        let ((min_point, min_indices), (max_point, max_indices)) = Self::compute_extremes(points);
-
         // Create the initial simplex, a tetrahedron in 3D.
-        let mut c_hull = Self::init_tetrahedron(points, min_indices, max_indices)?;
+        let mut c_hull = Self::init_tetrahedron(points)?;
 
         // Run the main quick hull algorithm.
         c_hull.update(max_iter)?;
@@ -134,7 +132,7 @@ impl ConvexHull {
 
     /// Computes the minimum and maximum extents for the given point set, along with
     /// the indices of the minimum and maximum vertices along each coordinate axis.
-    fn compute_extremes(points: &[DVec3]) -> ((DVec3, [usize; 3]), (DVec3, [usize; 3])) {
+    fn compute_extremes(points: &[DVec3]) -> ([usize; 3], [usize; 3]) {
         let mut min = points[0];
         let mut max = points[0];
 
@@ -167,14 +165,14 @@ impl ConvexHull {
             }
         }
 
-        ((min, min_vertices), (max, max_vertices))
+        (min_vertices, max_vertices)
     }
 
     fn init_tetrahedron(
         points: &[DVec3],
-        min_indices: [usize; 3],
-        max_indices: [usize; 3],
     ) -> Result<Self, ErrorKind> {
+
+        let (min_indices, max_indices) = Self::compute_extremes(points);
         // Get the indices of the vertices used for the initial tetrahedron.
         let indices_set = Self::init_tetrahedron_indices(points, min_indices, max_indices)?;
 
