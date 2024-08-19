@@ -1008,7 +1008,7 @@ fn sphere_test() {
 fn heavy_sea_urchin_test() {
     use rand::prelude::{Distribution, SeedableRng, SliceRandom};
 
-    // increase this this to ~1000 to gather more samples for a sampling profiler
+    // increase this to ~1000 to gather more samples for a sampling profiler
     let iterations = 1;
 
     for s in 0..iterations {
