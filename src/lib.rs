@@ -16,6 +16,7 @@ use glam::{DMat4, DVec3};
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
+use std::f64::consts::PI;
 use std::fmt;
 
 /// A polygonal face belonging to a [`ConvexHull`].
@@ -601,6 +602,7 @@ impl ConvexHull {
     }
 
     /// Computes the volume of the convex hull.
+    /// Sums up volumes of tetrahedrons from an arbitrary point to all other points
     pub fn volume(&self) -> f64 {
         let (hull_vertices, hull_indices) = self.vertices_indices();
         let reference_point = hull_vertices[hull_indices[0]].extend(1.0);
@@ -614,18 +616,7 @@ impl ConvexHull {
             *mat.col_mut(3) = reference_point;
             volume += mat.determinant();
         }
-        let factorial = {
-            let mut result = 1.0;
-            let mut m = 1.0 + 1.0;
-            let mut n = 3;
-            while n > 1 {
-                result *= m;
-                n -= 1;
-                m += 1.0;
-            }
-            result
-        };
-        volume / factorial
+        volume / 6.0
     }
 
     /// Checks if the convex hull is convex with the given tolerance.
@@ -767,7 +758,7 @@ fn triangle_normal([a, b, c]: [DVec3; 3]) -> DVec3 {
 #[test]
 fn four_points_coincident() {
     let points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
-    
+
     let result = ConvexHull::try_new(&points, None);
     assert!(
         matches!(
@@ -822,9 +813,7 @@ fn four_points_min_volume() {
 
 #[test]
 fn volume_should_be_positive() {
-    let mut points = (0..4)
-        .map(|_| DVec3::splat(1.0))
-        .collect::<Vec<_>>();
+    let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
     points[0].x += 2.0 * f64::EPSILON;
     points[1].y += 3.0 * f64::EPSILON;
     points[2].z += 3.0 * f64::EPSILON;
@@ -933,6 +922,19 @@ fn cube_volume_test() {
     assert_eq!(cube.volume(), 8.0);
 }
 
+// Heavy test (~ 0.75s)
+#[test]
+fn sphere_volume_test() {
+    let points = sphere_points(50);
+    let hull = ConvexHull::try_new(&points, None).unwrap();
+    let volume = hull.volume();
+    let expected_volume = 4.0 / 3.0 * PI;
+    assert!(
+        (volume - expected_volume).abs() < 0.1,
+        "Expected {expected_volume}, got {volume}"
+    );
+}
+
 #[test]
 fn cube_support_point_test() {
     let p1 = DVec3::new(1.0, 1.0, 1.0);
@@ -1016,8 +1018,8 @@ fn simplex_may_degenerate_test_2() {
         .vertices_indices();
 }
 
-#[test]
-fn sphere_test() {
+#[cfg(test)]
+fn sphere_points(divisions: usize) -> Vec<DVec3> {
     fn rot_z(point: DVec3, angle: f64) -> DVec3 {
         let e1 = angle.cos() * point[0] - angle.sin() * point[1];
         let e2 = angle.sin() * point[0] + angle.cos() * point[1];
@@ -1031,17 +1033,22 @@ fn sphere_test() {
         DVec3::new(e1, e2, e3)
     }
     let mut points = Vec::new();
-    let dev = 10;
     let unit_y = DVec3::Y;
-    for step_x in 0..dev {
-        let angle_x = 2.0 * std::f64::consts::PI * (step_x as f64 / dev as f64);
+    for step_x in 0..divisions {
+        let angle_x = 2.0 * std::f64::consts::PI * (step_x as f64 / divisions as f64);
         let p = rot_x(unit_y, angle_x);
-        for step_z in 0..dev {
-            let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / dev as f64);
+        for step_z in 0..divisions {
+            let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / divisions as f64);
             let p = rot_z(p, angle_z);
             points.push(p);
         }
     }
+    points
+}
+
+#[test]
+fn sphere_test() {
+    let points = sphere_points(10);
     let (_v, _i) = ConvexHull::try_new(&points, None)
         .unwrap()
         .vertices_indices();
