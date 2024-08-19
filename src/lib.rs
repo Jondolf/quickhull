@@ -168,10 +168,7 @@ impl ConvexHull {
         (min_vertices, max_vertices)
     }
 
-    fn init_tetrahedron(
-        points: &[DVec3],
-    ) -> Result<Self, ErrorKind> {
-
+    fn init_tetrahedron(points: &[DVec3]) -> Result<Self, ErrorKind> {
         let (min_indices, max_indices) = Self::compute_extremes(points);
         // Get the indices of the vertices used for the initial tetrahedron.
         let indices_set = Self::init_tetrahedron_indices(points, min_indices, max_indices)?;
@@ -232,25 +229,10 @@ impl ConvexHull {
         max_indices: [usize; 3],
     ) -> Result<[usize; 4], ErrorKind> {
         let mut indices = [0; 4];
-
-        // If there are only at most four points, return a degenerate tetrahedron.
-        if points.len() <= 4 {
-            indices = [
-                0,
-                1.min(points.len() - 1),
-                2.min(points.len() - 1),
-                3.min(points.len() - 1),
-            ];
-            let normal =
-                triangle_normal([points[indices[0]], points[indices[1]], points[indices[2]]]);
-
-            // Enforce CCW orientation.
-            if is_on_positive_side(points[indices[3]], normal, normal.dot(points[indices[0]])) {
-                indices.swap(1, 0);
-            }
-
-            return Ok(indices);
-        }
+        debug_assert!(
+            points.len() > 3,
+            "This should be checked before this function"
+        );
 
         // The maximum one-dimensional extent of the point-cloud, and the index
         // corresponding to that dimension (x = 0, y = 1, z = 2).
@@ -775,12 +757,67 @@ fn position_from_face(points: &[DVec3], face: &Face, point_index: usize) -> f64 
     )
 }
 
-
 /// Computes the normal of a triangle face with a counterclockwise orientation.
 fn triangle_normal([a, b, c]: [DVec3; 3]) -> DVec3 {
     let ab = b - a;
     let ac = c - a;
     ab.cross(ac)
+}
+
+#[test]
+fn four_points_coincident() {
+    let points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+    
+    let result = ConvexHull::try_new(&points, None);
+    assert!(
+        matches!(
+            result,
+            Err(ErrorKind::DegenerateInput(DegenerateInput::Coincident))
+        ),
+        "{result:?} should be 'coincident' error"
+    );
+}
+
+#[test]
+fn four_points_collinear() {
+    let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+    points[0].x += f64::EPSILON;
+    let result = ConvexHull::try_new(&points, None);
+    assert!(
+        matches!(
+            result,
+            Err(ErrorKind::DegenerateInput(DegenerateInput::Collinear))
+        ),
+        "{result:?} should be 'collinear' error"
+    );
+}
+
+#[test]
+fn four_points_coplanar() {
+    let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+    points[0].x += f64::EPSILON;
+    points[1].y += f64::EPSILON;
+    let result = ConvexHull::try_new(&points, None);
+    assert!(
+        matches!(
+            result,
+            Err(ErrorKind::DegenerateInput(DegenerateInput::Coplanar))
+        ),
+        "{result:?} should be 'coplanar' error"
+    );
+}
+
+#[test]
+fn four_points_min_volume() {
+    let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+    points[0].x += 3.0 * f64::EPSILON;
+    points[1].y += 3.0 * f64::EPSILON;
+    points[2].z += 3.0 * f64::EPSILON;
+    let result = ConvexHull::try_new(&points, None);
+    assert_eq!(
+        4.3790577010150533e-47,
+        result.expect("this should compute ok").volume()
+    );
 }
 
 #[test]
