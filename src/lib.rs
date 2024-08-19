@@ -775,9 +775,6 @@ fn position_from_face(points: &[DVec3], face: &Face, point_index: usize) -> f64 
     )
 }
 
-fn is_on_positive_side(point: DVec3, normal: DVec3, plane_distance: f64) -> bool {
-    normal.dot(point) + plane_distance >= 0.0
-}
 
 /// Computes the normal of a triangle face with a counterclockwise orientation.
 fn triangle_normal([a, b, c]: [DVec3; 3]) -> DVec3 {
