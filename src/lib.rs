@@ -603,6 +603,8 @@ impl ConvexHull {
 
     /// Computes the volume of the convex hull.
     /// Sums up volumes of tetrahedrons from an arbitrary point to all other points
+    /// 
+    /// Returns non-negative value, for extremely small objects might return 0.0
     pub fn volume(&self) -> f64 {
         let (hull_vertices, hull_indices) = self.vertices_indices();
         let reference_point = hull_vertices[hull_indices[0]].extend(1.0);
@@ -614,7 +616,7 @@ impl ConvexHull {
                 *mat.col_mut(j) = row;
             }
             *mat.col_mut(3) = reference_point;
-            volume += mat.determinant();
+            volume += mat.determinant().max(0.0);
         }
         volume / 6.0
     }
@@ -814,9 +816,9 @@ fn four_points_min_volume() {
 #[test]
 fn volume_should_be_positive() {
     let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
-    points[0].x += 2.0 * f64::EPSILON;
-    points[1].y += 3.0 * f64::EPSILON;
-    points[2].z += 3.0 * f64::EPSILON;
+    points[0].x += 1.0 * f64::EPSILON;
+    points[1].y += 1.0 * f64::EPSILON;
+    points[2].z += 2.0 * f64::EPSILON;
     let result = ConvexHull::try_new(&points, None);
     assert!(result.expect("this should compute ok").volume() > 0.0);
 }
