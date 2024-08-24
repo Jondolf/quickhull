@@ -229,8 +229,7 @@ fn render_convex_hulls(
             .map(|v| Vec3::from(*v).as_dvec3())
             .collect::<Vec<_>>();
 
-        let Ok(hull) = ConvexHull::try_new(&positions, None, None).map_err(|e| warn!("{:?}", e))
-        else {
+        let Ok(hull) = ConvexHull::try_new(&positions, None).map_err(|e| warn!("{:?}", e)) else {
             continue;
         };
 

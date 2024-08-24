@@ -103,11 +103,7 @@ pub struct ConvexHull {
 
 impl ConvexHull {
     /// Attempts to compute a [`ConvexHull`] for the given set of points.
-    pub fn try_new(
-        points: &[DVec3],
-        tolerance: impl Into<Option<f64>>,
-        max_iter: Option<usize>,
-    ) -> Result<Self, ErrorKind> {
+    pub fn try_new(points: &[DVec3], max_iter: Option<usize>) -> Result<Self, ErrorKind> {
         let num_points = points.len();
 
         if num_points == 0 {
@@ -118,17 +114,11 @@ impl ConvexHull {
             return Err(ErrorKind::Degenerated);
         }
 
-        let ((min_point, min_indices), (max_point, max_indices)) = Self::compute_extremes(points);
-
-        let tolerance = tolerance
-            .into()
-            .unwrap_or(Self::tolerance(min_point, max_point));
-
         // Create the initial simplex, a tetrahedron in 3D.
-        let mut c_hull = Self::init_tetrahedron(points, min_indices, max_indices, tolerance)?;
+        let mut c_hull = Self::init_tetrahedron(points)?;
 
         // Run the main quick hull algorithm.
-        c_hull.update(tolerance, max_iter)?;
+        c_hull.update(max_iter)?;
 
         // Shrink the hull, removing unused points.
         c_hull.remove_unused_points();
@@ -142,7 +132,7 @@ impl ConvexHull {
 
     /// Computes the minimum and maximum extents for the given point set, along with
     /// the indices of the minimum and maximum vertices along each coordinate axis.
-    fn compute_extremes(points: &[DVec3]) -> ((DVec3, [usize; 3]), (DVec3, [usize; 3])) {
+    fn compute_extremes(points: &[DVec3]) -> ([usize; 3], [usize; 3]) {
         let mut min = points[0];
         let mut max = points[0];
 
@@ -175,22 +165,13 @@ impl ConvexHull {
             }
         }
 
-        ((min, min_vertices), (max, max_vertices))
+        (min_vertices, max_vertices)
     }
 
-    fn tolerance(min: DVec3, max: DVec3) -> f64 {
-        3.0 * f64::EPSILON * max.abs().max(min.abs()).element_sum()
-    }
-
-    fn init_tetrahedron(
-        points: &[DVec3],
-        min_indices: [usize; 3],
-        max_indices: [usize; 3],
-        tolerance: f64,
-    ) -> Result<Self, ErrorKind> {
+    fn init_tetrahedron(points: &[DVec3]) -> Result<Self, ErrorKind> {
+        let (min_indices, max_indices) = Self::compute_extremes(points);
         // Get the indices of the vertices used for the initial tetrahedron.
-        let indices_set =
-            Self::init_tetrahedron_indices(points, min_indices, max_indices, tolerance)?;
+        let indices_set = Self::init_tetrahedron_indices(points, min_indices, max_indices)?;
 
         let mut faces = BTreeMap::new();
 
@@ -208,7 +189,7 @@ impl ConvexHull {
             // Check the order of the face's vertices.
             let rem_point = indices_set[i_face];
             let pos = position_from_face(points, &face, rem_point);
-            if pos > tolerance {
+            if pos > 0.0 {
                 face.indices.swap(0, 1);
                 face.normal = -face.normal;
                 face.distance_from_origin = -face.distance_from_origin;
@@ -246,28 +227,12 @@ impl ConvexHull {
         points: &[DVec3],
         min_indices: [usize; 3],
         max_indices: [usize; 3],
-        tolerance: f64,
     ) -> Result<[usize; 4], ErrorKind> {
         let mut indices = [0; 4];
-
-        // If there are only at most four points, return a degenerate tetrahedron.
-        if points.len() <= 4 {
-            indices = [
-                0,
-                1.min(points.len() - 1),
-                2.min(points.len() - 1),
-                3.min(points.len() - 1),
-            ];
-            let normal =
-                triangle_normal([points[indices[0]], points[indices[1]], points[indices[2]]]);
-
-            // Enforce CCW orientation.
-            if is_on_positive_side(points[indices[3]], normal, normal.dot(points[indices[0]])) {
-                indices.swap(1, 0);
-            }
-
-            return Ok(indices);
-        }
+        debug_assert!(
+            points.len() > 3,
+            "This should be checked before this function"
+        );
 
         // The maximum one-dimensional extent of the point-cloud, and the index
         // corresponding to that dimension (x = 0, y = 1, z = 2).
@@ -282,7 +247,7 @@ impl ConvexHull {
             }
         }
 
-        if max_extent <= tolerance {
+        if max_extent == 0.0 {
             // The point cloud seems to consist of a single point.
             return Err(ErrorKind::DegenerateInput(DegenerateInput::Coincident));
         }
@@ -313,7 +278,7 @@ impl ConvexHull {
             }
         }
 
-        if max_squared_distance <= (100.0 * tolerance).powi(2) {
+        if max_squared_distance == 0.0 {
             return Err(ErrorKind::DegenerateInput(DegenerateInput::Collinear));
         }
 
@@ -340,14 +305,14 @@ impl ConvexHull {
             }
         }
 
-        if max_distance.abs() <= 100.0 * tolerance {
+        if max_distance.abs() == 0.0 {
             return Err(ErrorKind::DegenerateInput(DegenerateInput::Coplanar));
         }
 
         Ok(indices)
     }
 
-    fn update(&mut self, tolerance: f64, max_iter: Option<usize>) -> Result<(), ErrorKind> {
+    fn update(&mut self, max_iter: Option<usize>) -> Result<(), ErrorKind> {
         let mut face_add_count = *self.faces.keys().last().unwrap() + 1;
         let mut num_iter = 0;
         let mut assigned_point_indices: HashSet<usize> = HashSet::new();
@@ -370,7 +335,7 @@ impl ConvexHull {
                 let pos = position_from_face(&self.points, face, i);
 
                 // If the point can "see" the face, add it to the face's list of outside points.
-                if pos > tolerance {
+                if pos > 0.0 {
                     face.outside_points.push((i, pos));
                 }
             }
@@ -408,14 +373,8 @@ impl ConvexHull {
             let (furthest_point_index, _) = *face.outside_points.last().unwrap();
 
             // Initialize the visible set.
-            let visible_set = initialize_visible_set(
-                &self.points,
-                furthest_point_index,
-                &self.faces,
-                key,
-                face,
-                tolerance,
-            );
+            let visible_set =
+                initialize_visible_set(&self.points, furthest_point_index, &self.faces, key, face);
 
             // Get the horizon.
             let horizon = compute_horizon(&visible_set, &self.faces)?;
@@ -508,7 +467,7 @@ impl ConvexHull {
                     let position =
                         position_from_face(&self.points, new_face, *assigned_point_index);
 
-                    if position <= tolerance && position >= -tolerance {
+                    if position == 0.0 {
                         continue;
                     } else if position > 0.0 {
                         let new_face = self.faces.get_mut(new_key).unwrap();
@@ -549,7 +508,7 @@ impl ConvexHull {
                         checked_point_set.insert(outside_point_index);
 
                         let pos = position_from_face(&self.points, new_face, *outside_point_index);
-                        if pos > tolerance {
+                        if pos > 0.0 {
                             new_face.outside_points.push((*outside_point_index, pos));
                         }
                     }
@@ -578,7 +537,7 @@ impl ConvexHull {
             }
         }
 
-        if !self.is_convex(tolerance) {
+        if !self.is_convex() {
             return Err(ErrorKind::RoundOffError("concave".to_string()));
         }
 
@@ -586,15 +545,9 @@ impl ConvexHull {
     }
 
     /// Adds the given points to the point set, attempting to update the convex hull.
-    pub fn add_points(
-        &mut self,
-        points: &[DVec3],
-        tolerance: impl Into<f64>,
-    ) -> Result<(), ErrorKind> {
-        let tolerance = tolerance.into();
-
+    pub fn add_points(&mut self, points: &[DVec3]) -> Result<(), ErrorKind> {
         self.points.append(&mut points.to_vec());
-        self.update(tolerance, None)?;
+        self.update(None)?;
         self.remove_unused_points();
 
         if self.points.len() <= 3 {
@@ -648,6 +601,9 @@ impl ConvexHull {
     }
 
     /// Computes the volume of the convex hull.
+    /// Sums up volumes of tetrahedrons from an arbitrary point to all other points
+    ///
+    /// Returns non-negative value, for extremely small objects might return 0.0
     pub fn volume(&self) -> f64 {
         let (hull_vertices, hull_indices) = self.vertices_indices();
         let reference_point = hull_vertices[hull_indices[0]].extend(1.0);
@@ -659,26 +615,15 @@ impl ConvexHull {
                 *mat.col_mut(j) = row;
             }
             *mat.col_mut(3) = reference_point;
-            volume += mat.determinant();
+            volume += mat.determinant().max(0.0);
         }
-        let factorial = {
-            let mut result = 1.0;
-            let mut m = 1.0 + 1.0;
-            let mut n = 3;
-            while n > 1 {
-                result *= m;
-                n -= 1;
-                m += 1.0;
-            }
-            result
-        };
-        volume / factorial
+        volume / 6.0
     }
 
     /// Checks if the convex hull is convex with the given tolerance.
-    fn is_convex(&self, tolerance: f64) -> bool {
+    fn is_convex(&self) -> bool {
         for face in self.faces.values() {
-            if position_from_face(&self.points, face, 0) > tolerance {
+            if position_from_face(&self.points, face, 0) > 0.0 {
                 return false;
             }
         }
@@ -709,7 +654,6 @@ fn initialize_visible_set(
     faces: &BTreeMap<usize, Face>,
     face_key: usize,
     face: &Face,
-    tolerance: f64,
 ) -> HashSet<usize> {
     let mut visible_set = HashSet::new();
     visible_set.insert(face_key);
@@ -724,7 +668,7 @@ fn initialize_visible_set(
 
         let neighbor = faces.get(&neighbor_key).unwrap();
         let pos = position_from_face(points, neighbor, furthest_point_index);
-        if pos > tolerance {
+        if pos > 0.0 {
             visible_set.insert(neighbor_key);
             neighbor_stack.append(&mut neighbor.neighbor_faces.to_vec());
         }
@@ -778,14 +722,31 @@ fn compute_horizon(
     Ok(horizon)
 }
 
-fn position_from_face(points: &[DVec3], face: &Face, point_index: usize) -> f64 {
-    let origin = face.distance_from_origin;
-    let pos = face.normal.dot(points[point_index]);
-    pos - origin
+trait ToRobust {
+    fn to_robust(self) -> robust::Coord3D<f64>;
 }
 
-fn is_on_positive_side(point: DVec3, normal: DVec3, plane_distance: f64) -> bool {
-    normal.dot(point) + plane_distance >= 0.0
+impl ToRobust for glam::DVec3 {
+    fn to_robust(self) -> robust::Coord3D<f64> {
+        let DVec3 { x, y, z } = self;
+        robust::Coord3D { x, y, z }
+    }
+}
+
+fn position_from_face(points: &[DVec3], face: &Face, point_index: usize) -> f64 {
+    let face_points = face
+        .indices
+        .iter()
+        .copied()
+        .map(|i| points[i])
+        .collect::<Vec<_>>();
+
+    -robust::orient3d(
+        face_points[0].to_robust(),
+        face_points[1].to_robust(),
+        face_points[2].to_robust(),
+        points[point_index].to_robust(),
+    )
 }
 
 /// Computes the normal of a triangle face with a counterclockwise orientation.
@@ -793,6 +754,72 @@ fn triangle_normal([a, b, c]: [DVec3; 3]) -> DVec3 {
     let ab = b - a;
     let ac = c - a;
     ab.cross(ac)
+}
+
+#[test]
+fn four_points_coincident() {
+    let points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+
+    let result = ConvexHull::try_new(&points, None);
+    assert!(
+        matches!(
+            result,
+            Err(ErrorKind::DegenerateInput(DegenerateInput::Coincident))
+        ),
+        "{result:?} should be 'coincident' error"
+    );
+}
+
+#[test]
+fn four_points_collinear() {
+    let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+    points[0].x += f64::EPSILON;
+    let result = ConvexHull::try_new(&points, None);
+    assert!(
+        matches!(
+            result,
+            Err(ErrorKind::DegenerateInput(DegenerateInput::Collinear))
+        ),
+        "{result:?} should be 'collinear' error"
+    );
+}
+
+#[test]
+fn four_points_coplanar() {
+    let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+    points[0].x += f64::EPSILON;
+    points[1].y += f64::EPSILON;
+    let result = ConvexHull::try_new(&points, None);
+    assert!(
+        matches!(
+            result,
+            Err(ErrorKind::DegenerateInput(DegenerateInput::Coplanar))
+        ),
+        "{result:?} should be 'coplanar' error"
+    );
+}
+
+#[test]
+fn four_points_min_volume() {
+    let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+    points[0].x += 3.0 * f64::EPSILON;
+    points[1].y += 3.0 * f64::EPSILON;
+    points[2].z += 3.0 * f64::EPSILON;
+    let result = ConvexHull::try_new(&points, None);
+    assert_eq!(
+        4.3790577010150533e-47,
+        result.expect("this should compute ok").volume()
+    );
+}
+
+#[test]
+fn volume_should_be_positive() {
+    let mut points = (0..4).map(|_| DVec3::splat(1.0)).collect::<Vec<_>>();
+    points[0].x += 1.0 * f64::EPSILON;
+    points[1].y += 1.0 * f64::EPSILON;
+    points[2].z += 2.0 * f64::EPSILON;
+    let result = ConvexHull::try_new(&points, None);
+    assert!(result.expect("this should compute ok").volume() > 0.0);
 }
 
 #[test]
@@ -842,7 +869,7 @@ fn octahedron_test() {
     let p4 = DVec3::new(-1.0, 0.0, 0.0);
     let p5 = DVec3::new(0.0, -1.0, 0.0);
     let p6 = DVec3::new(0.0, 0.0, -1.0);
-    let (_v, i) = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6], 0.001, None)
+    let (_v, i) = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6], None)
         .unwrap()
         .vertices_indices();
     assert_eq!(i.len(), 8 * 3);
@@ -860,7 +887,7 @@ fn octahedron_translation_test() {
         .into_iter()
         .map(|p| p + DVec3::splat(10.0))
         .collect();
-    let (_v, i) = ConvexHull::try_new(&points, 0.001, None)
+    let (_v, i) = ConvexHull::try_new(&points, None)
         .unwrap()
         .vertices_indices();
     assert_eq!(i.len(), 8 * 3);
@@ -876,7 +903,7 @@ fn cube_test() {
     let p6 = DVec3::new(-1.0, 1.0, -1.0);
     let p7 = DVec3::new(-1.0, -1.0, 1.0);
     let p8 = DVec3::new(-1.0, -1.0, -1.0);
-    let (_v, i) = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], 0.001, None)
+    let (_v, i) = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], None)
         .unwrap()
         .vertices_indices();
     assert_eq!(i.len(), 6 * 2 * 3);
@@ -892,8 +919,21 @@ fn cube_volume_test() {
     let p6 = DVec3::new(0.0, 2.0, 0.0);
     let p7 = DVec3::new(0.0, 0.0, 2.0);
     let p8 = DVec3::new(0.0, 0.0, 0.0);
-    let cube = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], 0.001, None).unwrap();
+    let cube = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], None).unwrap();
     assert_eq!(cube.volume(), 8.0);
+}
+
+// Heavy test (~ 0.75s)
+#[test]
+fn sphere_volume_test() {
+    let points = sphere_points(50);
+    let hull = ConvexHull::try_new(&points, None).unwrap();
+    let volume = hull.volume();
+    let expected_volume = 4.0 / 3.0 * std::f64::consts::PI;
+    assert!(
+        (volume - expected_volume).abs() < 0.1,
+        "Expected {expected_volume}, got {volume}"
+    );
 }
 
 #[test]
@@ -906,7 +946,7 @@ fn cube_support_point_test() {
     let p6 = DVec3::new(0.0, 1.0, 0.0);
     let p7 = DVec3::new(0.0, 0.0, 1.0);
     let p8 = DVec3::new(0.0, 0.0, 0.0);
-    let cube = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], 0.001, None).unwrap();
+    let cube = ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], None).unwrap();
     assert_eq!(cube.support_point(DVec3::splat(0.5)), p1);
 }
 
@@ -920,10 +960,17 @@ fn flat_test() {
     let p6 = DVec3::new(-1.0, 1.0, 10.0);
     let p7 = DVec3::new(-1.0, -1.0, 10.0);
     let p8 = DVec3::new(-1.0, -1.0, 10.0);
-    assert!(
-        ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], 0.001, None)
-            .is_err_and(|err| err == ErrorKind::DegenerateInput(DegenerateInput::Coplanar))
-    );
+    assert!(ConvexHull::try_new(&[p1, p2, p3, p4, p5, p6, p7, p8], None)
+        .is_err_and(|err| err == ErrorKind::DegenerateInput(DegenerateInput::Coplanar)));
+}
+
+#[test]
+fn line_test() {
+    let points = (0..10)
+        .map(|i| DVec3::new(i as f64, 1.0, 10.0))
+        .collect::<Vec<_>>();
+    assert!(ConvexHull::try_new(&points, None)
+        .is_err_and(|err| err == ErrorKind::DegenerateInput(DegenerateInput::Collinear)));
 }
 
 #[test]
@@ -940,7 +987,7 @@ fn simplex_may_degenerate_test() {
         DVec3::new(0.0, 0.0, 2.0),
         DVec3::new(1.0, 0.0, 2.0),
     ];
-    let (_v, _i) = ConvexHull::try_new(&points, 0.001, None)
+    let (_v, _i) = ConvexHull::try_new(&points, None)
         .unwrap()
         .vertices_indices();
 }
@@ -967,70 +1014,90 @@ fn simplex_may_degenerate_test_2() {
     ];
     let indices = [4, 5, 1, 11, 1, 5, 1, 11, 10, 10, 2, 1, 5, 8, 11];
     let points = indices.iter().map(|i| vertices[*i]).collect::<Vec<_>>();
-    let (_v, _i) = ConvexHull::try_new(&points, 0.001, None)
+    let (_v, _i) = ConvexHull::try_new(&points, None)
         .unwrap()
         .vertices_indices();
+}
+
+#[cfg(test)]
+fn sphere_points(divisions: usize) -> Vec<DVec3> {
+    fn rot_z(point: DVec3, angle: f64) -> DVec3 {
+        let e1 = angle.cos() * point[0] - angle.sin() * point[1];
+        let e2 = angle.sin() * point[0] + angle.cos() * point[1];
+        let e3 = point[2];
+        DVec3::new(e1, e2, e3)
+    }
+    fn rot_x(point: DVec3, angle: f64) -> DVec3 {
+        let e1 = point[0];
+        let e2 = angle.cos() * point[1] - angle.sin() * point[2];
+        let e3 = angle.sin() * point[1] + angle.cos() * point[2];
+        DVec3::new(e1, e2, e3)
+    }
+    let mut points = Vec::new();
+    let unit_y = DVec3::Y;
+    for step_x in 0..divisions {
+        let angle_x = 2.0 * std::f64::consts::PI * (step_x as f64 / divisions as f64);
+        let p = rot_x(unit_y, angle_x);
+        for step_z in 0..divisions {
+            let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / divisions as f64);
+            let p = rot_z(p, angle_z);
+            points.push(p);
+        }
+    }
+    points
 }
 
 #[test]
 fn sphere_test() {
-    fn rot_z(point: DVec3, angle: f64) -> DVec3 {
-        let e1 = angle.cos() * point[0] - angle.sin() * point[1];
-        let e2 = angle.sin() * point[0] + angle.cos() * point[1];
-        let e3 = point[2];
-        DVec3::new(e1, e2, e3)
-    }
-    fn rot_x(point: DVec3, angle: f64) -> DVec3 {
-        let e1 = point[0];
-        let e2 = angle.cos() * point[1] - angle.sin() * point[2];
-        let e3 = angle.sin() * point[1] + angle.cos() * point[2];
-        DVec3::new(e1, e2, e3)
-    }
-    let mut points = Vec::new();
-    let dev = 10;
-    let unit_y = DVec3::Y;
-    for step_x in 0..dev {
-        let angle_x = 2.0 * std::f64::consts::PI * (step_x as f64 / dev as f64);
-        let p = rot_x(unit_y, angle_x);
-        for step_z in 0..dev {
-            let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / dev as f64);
-            let p = rot_z(p, angle_z);
-            points.push(p);
-        }
-    }
-    let (_v, _i) = ConvexHull::try_new(&points, 0.001, None)
+    let points = sphere_points(10);
+    let (_v, _i) = ConvexHull::try_new(&points, None)
         .unwrap()
         .vertices_indices();
 }
 
+/// Useful for fuzzing and profiling
+/// creates a sea-urchin like point cloud
+/// with points distributed arbitrarily within a sphere
 #[test]
-#[ignore]
-fn heavy_sphere_test() {
-    fn rot_z(point: DVec3, angle: f64) -> DVec3 {
-        let e1 = angle.cos() * point[0] - angle.sin() * point[1];
-        let e2 = angle.sin() * point[0] + angle.cos() * point[1];
-        let e3 = point[2];
-        DVec3::new(e1, e2, e3)
-    }
-    fn rot_x(point: DVec3, angle: f64) -> DVec3 {
-        let e1 = point[0];
-        let e2 = angle.cos() * point[1] - angle.sin() * point[2];
-        let e3 = angle.sin() * point[1] + angle.cos() * point[2];
-        DVec3::new(e1, e2, e3)
-    }
-    let mut points = Vec::new();
-    let dev = 100;
-    let unit_y = DVec3::Y;
-    for step_x in 0..dev {
-        let angle_x = 2.0 * std::f64::consts::PI * (step_x as f64 / dev as f64);
-        let p = rot_x(unit_y, angle_x);
-        for step_z in 0..dev {
-            let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / dev as f64);
-            let p = rot_z(p, angle_z);
-            points.push(p);
+fn heavy_sea_urchin_test() {
+    use rand::prelude::{Distribution, SeedableRng, SliceRandom};
+
+    // increase this to ~1000 to gather more samples for a sampling profiler
+    let iterations = 1;
+
+    for s in 0..iterations {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(s);
+        let dist = rand::distributions::Standard;
+
+        fn rot_z(point: DVec3, angle: f64) -> DVec3 {
+            let e1 = angle.cos() * point[0] - angle.sin() * point[1];
+            let e2 = angle.sin() * point[0] + angle.cos() * point[1];
+            let e3 = point[2];
+            DVec3::new(e1, e2, e3)
         }
+        fn rot_x(point: DVec3, angle: f64) -> DVec3 {
+            let e1 = point[0];
+            let e2 = angle.cos() * point[1] - angle.sin() * point[2];
+            let e3 = angle.sin() * point[1] + angle.cos() * point[2];
+            DVec3::new(e1, e2, e3)
+        }
+        let mut points = Vec::new();
+        let dev = 100;
+        let unit_y = DVec3::Y;
+        for step_x in 0..dev {
+            let angle_x = 2.0 * std::f64::consts::PI * (step_x as f64 / dev as f64);
+            let p = rot_x(unit_y, angle_x);
+            for step_z in 0..dev {
+                let angle_z = 2.0 * std::f64::consts::PI * (step_z as f64 / dev as f64);
+                let p = rot_z(p, angle_z);
+                let rand_offset: f64 = dist.sample(&mut rng);
+                points.push(p * rand_offset);
+            }
+        }
+
+        points.shuffle(&mut rng);
+        let (_v, _i) = ConvexHull::try_new(&points, None)
+            .unwrap()
+            .vertices_indices();
     }
-    let (_v, _i) = ConvexHull::try_new(&points, 0.001, None)
-        .unwrap()
-        .vertices_indices();
 }
