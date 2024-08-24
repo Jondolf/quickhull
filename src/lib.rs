@@ -16,7 +16,6 @@ use glam::{DMat4, DVec3};
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
-use std::f64::consts::PI;
 use std::fmt;
 
 /// A polygonal face belonging to a [`ConvexHull`].
@@ -603,7 +602,7 @@ impl ConvexHull {
 
     /// Computes the volume of the convex hull.
     /// Sums up volumes of tetrahedrons from an arbitrary point to all other points
-    /// 
+    ///
     /// Returns non-negative value, for extremely small objects might return 0.0
     pub fn volume(&self) -> f64 {
         let (hull_vertices, hull_indices) = self.vertices_indices();
@@ -930,7 +929,7 @@ fn sphere_volume_test() {
     let points = sphere_points(50);
     let hull = ConvexHull::try_new(&points, None).unwrap();
     let volume = hull.volume();
-    let expected_volume = 4.0 / 3.0 * PI;
+    let expected_volume = 4.0 / 3.0 * std::f64::consts::PI;
     assert!(
         (volume - expected_volume).abs() < 0.1,
         "Expected {expected_volume}, got {volume}"
