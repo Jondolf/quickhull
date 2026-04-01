@@ -89,7 +89,7 @@ fn on_scene_ready(
     }
 
     // Compute the convex hull.
-    let hull = match quickhull::ConvexHull3d::try_from_points(&points, None) {
+    let hull = match quickhull::ConvexTriangleMesh::try_from_points(&points, None) {
         Ok(hull) => hull,
         Err(e) => {
             error!("Failed to compute convex hull: {e}");
