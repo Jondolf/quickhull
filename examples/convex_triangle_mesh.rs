@@ -1,4 +1,4 @@
-//! Demonstrates computing and rendering the convex hulls of various 3D shapes.
+//! Demonstrates computing and rendering the [`ConvexTriangleMesh`] of various 3D shapes.
 
 use std::f32::consts::PI;
 
