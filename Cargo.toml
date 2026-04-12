@@ -19,7 +19,7 @@ thiserror = "2.0"
 
 # Hashing
 foldhash = "0.2"
-hashbrown = "0.16"
+hashbrown = "0.17"
 
 [dev-dependencies]
 bevy = "0.17"

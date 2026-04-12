@@ -202,7 +202,7 @@ fn render_convex_hulls(
             continue;
         };
 
-        let (vertices, indices) = hull.vertices_indices();
+        let (vertices, indices) = hull.into_parts();
 
         for handle in hull_query.iter_many(children) {
             let Some(mesh) = meshes.get_mut(handle) else {

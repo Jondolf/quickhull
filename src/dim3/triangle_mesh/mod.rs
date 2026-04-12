@@ -11,8 +11,8 @@ pub(super) use triangle_face::{FaceHandle, FaceId, PointId, TriangleFace};
 
 use glam::Vec3A;
 
-/// A 3D [convex hull] with triangular faces, representing the smallest convex set containing
-/// all input points in a given point set.
+/// A 3D [convex hull] with triangular faces, representing the smallest convex set
+/// containing all input points in a given point set.
 ///
 /// This can be thought of as a shrink wrapping of a 3D object.
 ///
@@ -39,7 +39,7 @@ use glam::Vec3A;
 /// let hull = ConvexTriangleMesh::try_from_points(&points, max_iter).unwrap();
 ///
 /// // Get the vertices and indices of the convex hull.
-/// let (vertices, indices) = hull.vertices_indices();
+/// let (vertices, indices) = hull.into_parts();
 ///
 /// // The hull should be a tetrahedron with 4 vertices and 4 triangular faces.
 /// assert_eq!(vertices.len(), 4);
@@ -47,8 +47,8 @@ use glam::Vec3A;
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct ConvexTriangleMesh {
-    /// The points of the convex hull.
-    points: Vec<Vec3A>,
+    /// The vertices of the convex hull.
+    vertices: Vec<Vec3A>,
 
     /// The triangle faces of the convex hull.
     indices: Vec<[u32; 3]>,
@@ -74,7 +74,7 @@ impl ConvexTriangleMesh {
         if points.is_empty() {
             // Empty hull.
             return Ok(ConvexTriangleMesh {
-                points: Vec::new(),
+                vertices: Vec::new(),
                 indices: Vec::new(),
             });
         }
@@ -88,10 +88,10 @@ impl ConvexTriangleMesh {
 
         // Create the initial simplex.
         match compute_initial_hull(points, &normalized_points, &mut undecided_points)? {
-            InitialConvexHull3d::Point(points, indices)
-            | InitialConvexHull3d::Segment(points, indices)
-            | InitialConvexHull3d::Triangle(points, indices) => {
-                return Ok(ConvexTriangleMesh { points, indices });
+            InitialConvexHull3d::Point(vertices, indices)
+            | InitialConvexHull3d::Segment(vertices, indices)
+            | InitialConvexHull3d::Triangle(vertices, indices) => {
+                return Ok(ConvexTriangleMesh { vertices, indices });
             }
             InitialConvexHull3d::Polyhedron(initial_faces) => {
                 faces = initial_faces;
@@ -115,16 +115,30 @@ impl ConvexTriangleMesh {
         }
 
         // Shrink the hull, removing unused points.
-        let mut points: Vec<Vec3A> = points.to_vec();
-        Self::remove_unused_points(&mut points, &mut indices);
+        let mut vertices: Vec<Vec3A> = points.to_vec();
+        Self::remove_unused_points(&mut vertices, &mut indices);
 
-        Ok(ConvexTriangleMesh { points, indices })
+        Ok(ConvexTriangleMesh { vertices, indices })
     }
 
-    /// Returns the points of the convex hull.
+    /// Creates a [`ConvexTriangleMesh`] from the given vertices and indices without performing any checks.
+    ///
+    /// The caller should ensure that the vertices and indices form a valid convex triangle mesh.
     #[inline]
-    pub fn points(&self) -> &[Vec3A] {
-        &self.points
+    pub const fn from_vertices_indices_unchecked(
+        points: Vec<Vec3A>,
+        indices: Vec<[u32; 3]>,
+    ) -> Self {
+        ConvexTriangleMesh {
+            vertices: points,
+            indices,
+        }
+    }
+
+    /// Returns the vertices of the convex hull.
+    #[inline]
+    pub fn vertices(&self) -> &[Vec3A] {
+        &self.vertices
     }
 
     /// Returns the indices of the convex hull's faces.
@@ -135,10 +149,10 @@ impl ConvexTriangleMesh {
 
     /// Returns the vertices and indices of the convex hull.
     ///
-    /// This consumes the convex hull.
+    /// This consumes the hull and allows taking ownership of the underlying data without cloning.
     #[inline]
-    pub fn vertices_indices(self) -> (Vec<Vec3A>, Vec<[u32; 3]>) {
-        (self.points, self.indices)
+    pub fn into_parts(self) -> (Vec<Vec3A>, Vec<[u32; 3]>) {
+        (self.vertices, self.indices)
     }
 
     /// The main quickhull algorithm.
@@ -283,9 +297,9 @@ impl ConvexTriangleMesh {
         self.indices
             .iter()
             .map(|triangle| {
-                let p0 = self.points[triangle[0] as usize];
-                let p1 = self.points[triangle[1] as usize];
-                let p2 = self.points[triangle[2] as usize];
+                let p0 = self.vertices[triangle[0] as usize];
+                let p1 = self.vertices[triangle[1] as usize];
+                let p2 = self.vertices[triangle[2] as usize];
 
                 // Volume of the tetrahedron formed by the triangle and the origin.
                 (p0.dot(p1.cross(p2))).abs() / 6.0
@@ -296,10 +310,10 @@ impl ConvexTriangleMesh {
     /// Computes the point on the convex hull that is furthest in the given direction.
     #[inline]
     pub fn support_point(&self, direction: Vec3A) -> Vec3A {
-        let mut max = self.points[0].dot(direction);
+        let mut max = self.vertices[0].dot(direction);
         let mut index = 0;
 
-        for (i, point) in self.points.iter().enumerate().skip(1) {
+        for (i, point) in self.vertices.iter().enumerate().skip(1) {
             let dot_product = point.dot(direction);
             if dot_product > max {
                 max = dot_product;
@@ -307,7 +321,7 @@ impl ConvexTriangleMesh {
             }
         }
 
-        self.points[index]
+        self.vertices[index]
     }
 }
 
@@ -591,7 +605,7 @@ mod tests {
         let points: Vec<Vec3A> = Vec::new();
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for empty point set");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
         assert!(vertices.is_empty());
         assert!(indices.is_empty());
     }
@@ -601,7 +615,7 @@ mod tests {
         let points = vec![Vec3A::splat(1.0)];
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for single point");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
         assert_eq!(vertices, vec![Vec3A::splat(1.0)]);
         assert_eq!(indices, vec![[0; 3]; 2]);
     }
@@ -616,7 +630,7 @@ mod tests {
         ];
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for two points");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
         assert_eq!(vertices, vec![Vec3A::splat(1.0), Vec3A::splat(2.0)]);
         assert_eq!(indices, vec![[0, 1, 0], [1, 0, 0]]);
     }
@@ -630,7 +644,7 @@ mod tests {
         ];
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for three points");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
         assert_eq!(vertices, points);
         assert_eq!(indices, vec![[0, 1, 2], [2, 1, 0]]);
     }
@@ -641,7 +655,7 @@ mod tests {
 
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for coincident points");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
         assert_eq!(vertices, vec![Vec3A::splat(1.0)]);
         assert_eq!(indices, vec![[0; 3]; 2]);
     }
@@ -652,7 +666,7 @@ mod tests {
         points[0].x += f32::EPSILON;
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for collinear points");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
         assert_eq!(vertices, vec![points[1], points[0]]);
         assert_eq!(indices, vec![[0, 1, 0], [1, 0, 0]]);
     }
@@ -664,7 +678,7 @@ mod tests {
         points[1].y += f32::EPSILON;
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for coplanar points");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
         assert_eq!(vertices, vec![points[2], points[0], points[1]]);
         assert_eq!(indices, vec![[0, 1, 2], [2, 1, 0]]);
     }
@@ -724,7 +738,7 @@ mod tests {
         let p6 = Vec3A::new(0.0, 0.0, -1.0);
         let (_v, i) = ConvexTriangleMesh::try_from_points(&[p1, p2, p3, p4, p5, p6], None)
             .unwrap()
-            .vertices_indices();
+            .into_parts();
         assert_eq!(i.len(), 8);
     }
 
@@ -742,7 +756,7 @@ mod tests {
             .collect();
         let (_v, i) = ConvexTriangleMesh::try_from_points(&points, None)
             .unwrap()
-            .vertices_indices();
+            .into_parts();
         assert_eq!(i.len(), 8);
     }
 
@@ -758,7 +772,7 @@ mod tests {
         let p8 = Vec3A::new(-1.0, -1.0, -1.0);
         let (_v, i) = ConvexTriangleMesh::try_from_points(&[p1, p2, p3, p4, p5, p6, p7, p8], None)
             .unwrap()
-            .vertices_indices();
+            .into_parts();
         assert_eq!(i.len(), 6 * 2);
     }
 
@@ -818,7 +832,7 @@ mod tests {
 
         let result = ConvexTriangleMesh::try_from_points(&[p1, p2, p3, p4, p5, p6, p7, p8], None)
             .expect("could not compute hull for flat points");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
 
         assert_eq!(vertices, vec![p3, p1, p5, p7]);
         assert_eq!(indices, vec![[0, 1, 2], [0, 2, 3], [3, 1, 0], [3, 2, 1]]);
@@ -832,7 +846,7 @@ mod tests {
 
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for line points");
-        let (vertices, indices) = result.vertices_indices();
+        let (vertices, indices) = result.into_parts();
 
         assert_eq!(vertices, vec![points[0], points[9]]);
         assert_eq!(indices, vec![[0, 1, 0], [1, 0, 0]]);
@@ -854,7 +868,7 @@ mod tests {
         ];
         let (_v, _i) = ConvexTriangleMesh::try_from_points(&points, None)
             .unwrap()
-            .vertices_indices();
+            .into_parts();
     }
 
     #[test]
@@ -881,7 +895,7 @@ mod tests {
         let points = indices.iter().map(|i| vertices[*i]).collect::<Vec<_>>();
         let (_v, _i) = ConvexTriangleMesh::try_from_points(&points, None)
             .unwrap()
-            .vertices_indices();
+            .into_parts();
     }
 
     #[cfg(test)]
@@ -917,7 +931,7 @@ mod tests {
         let points = sphere_points(10);
         let (_v, _i) = ConvexTriangleMesh::try_from_points(&points, None)
             .unwrap()
-            .vertices_indices();
+            .into_parts();
     }
 
     /// Useful for fuzzing and profiling.
@@ -962,7 +976,7 @@ mod tests {
             points.shuffle(&mut rng);
             let (_v, _i) = ConvexTriangleMesh::try_from_points(&points, None)
                 .unwrap()
-                .vertices_indices();
+                .into_parts();
         }
     }
 }

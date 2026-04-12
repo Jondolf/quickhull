@@ -124,6 +124,9 @@ impl TriangleFace {
         const EPSILON_SQ: f32 = (f32::EPSILON * 100.0) * (f32::EPSILON * 100.0);
 
         let [a, b, c] = indices.map(|id| points[id.index()]);
+
+        // TODO: Should we use the shortest edge? Is the additional precision worth it?
+        //       https://box2d.org/posts/2014/01/troublesome-triangle/
         let ab = b - a;
         let ac = c - a;
         let scaled_normal = ab.cross(ac);

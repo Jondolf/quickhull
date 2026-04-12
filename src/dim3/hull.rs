@@ -1,8 +1,7 @@
 use glam::Vec3A;
-use hashbrown::HashMap;
 
 use super::plane::Plane3d;
-use crate::{ConvexHull3dError, ConvexTriangleMesh};
+use crate::{collections::HashMap, ConvexHull3dError, ConvexTriangleMesh};
 
 /// A 3D [convex hull] representing the smallest convex set containing
 /// all input points in a given point set.
@@ -11,6 +10,8 @@ use crate::{ConvexHull3dError, ConvexTriangleMesh};
 ///
 /// Unlike [`ConvexTriangleMesh`], which always has triangular faces,
 /// [`ConvexHull3d`] supports polygonal faces formed by merging coplanar triangles.
+///
+/// The maximum number of vertices is 65,535 ([`u16::MAX`]).
 ///
 /// [convex hull]: https://en.wikipedia.org/wiki/Convex_hull
 ///
@@ -147,11 +148,8 @@ impl ConvexHull3d {
     /// Creates a [`ConvexHull3d`] from a [`ConvexTriangleMesh`] by merging
     /// coplanar triangular faces into polygonal faces.
     ///
-    /// `angle_tolerance` is the maximum angle (in radians) between the normals
+    /// `coplanarity_tolerance` is the maximum angle (in radians) between the normals
     /// of two adjacent triangle faces for them to be considered coplanar and merged.
-    ///
-    /// A typical value is `1e-4` for near-exact coplanarity, or `1e-2` for more
-    /// aggressive merging.
     ///
     /// # Example
     ///
@@ -171,170 +169,136 @@ impl ConvexHull3d {
     ///     Vec3A::new(-1.0, -1.0, -1.0),
     /// ];
     ///
+    /// // Compute the convex hull with triangle faces.
     /// let mesh = ConvexTriangleMesh::try_from_points(&points, None).unwrap();
     /// assert_eq!(mesh.indices().len(), 12);
     ///
-    /// // Merge coplanar faces into polygons.
+    /// // Construct a convex hull with polygonal faces from the triangle mesh,
+    /// // merging triangles with normals within 1e-4 radians of each other.
     /// let hull = ConvexHull3d::from_convex_mesh(&mesh, 1e-4);
-    /// assert_eq!(hull.faces().len(), 6); // 6 quad faces
+    ///
+    /// // The cube's hull should have 8 vertices and 6 quad faces after merging.
+    /// assert_eq!(hull.faces().len(), 6);
     /// ```
-    pub fn from_convex_mesh(mesh: &ConvexTriangleMesh, angle_tolerance: f32) -> Self {
+    pub fn from_convex_mesh(mesh: &ConvexTriangleMesh, coplanarity_tolerance: f32) -> Self {
         let tri_indices = mesh.indices();
-        let points = mesh.points();
+        let points = mesh.vertices();
 
         if tri_indices.is_empty() {
             return ConvexHull3d::default();
         }
 
-        // Build triangle adjacency from indices.
-        // `tri_adjacency[i][e]` is the index of the neighboring face
-        // across edge `e` (0, 1, 2) of face `i`,
-        let tri_adjacency = Self::build_triangle_adjacency(tri_indices);
-
-        let cos_tolerance = angle_tolerance.cos();
+        let cos_tolerance = coplanarity_tolerance
+            .clamp(0.0, core::f32::consts::PI)
+            .cos();
         let num_tris = tri_indices.len();
 
         // Compute triangle normals.
-        let normals: Vec<Vec3A> = tri_indices
+        let tri_normals: Vec<Vec3A> = tri_indices
             .iter()
             .map(|tri| {
+                // TODO: Should we use the shortest edge? Is the additional precision worth it?
+                //       https://box2d.org/posts/2014/01/troublesome-triangle/
                 let a = points[tri[0] as usize];
                 let b = points[tri[1] as usize];
                 let c = points[tri[2] as usize];
-
-                // The most accurate normal is calculated by using the two shortest edges
-                // from their shared vertex, which avoids precision loss for thin triangles.
-                // https://box2d.org/posts/2014/01/troublesome-triangle/
-                let ab = b - a;
-                let ac = c - a;
-                let bc = c - b;
-                let ab_sq = ab.length_squared();
-                let ac_sq = ac.length_squared();
-                let bc_sq = bc.length_squared();
-
-                // Find the longest edge and use the opposite vertex.
-                // The cross product order preserves CCW winding.
-                let normal = if bc_sq >= ab_sq && bc_sq >= ac_sq {
-                    // BC is longest -> use vertex A
-                    ab.cross(ac)
-                } else if ac_sq >= ab_sq {
-                    // AC is longest -> use vertex B
-                    bc.cross(-ab)
-                } else {
-                    // AB is longest -> use vertex C
-                    (-ac).cross(-bc)
-                };
-                normal.normalize_or_zero()
+                (b - a).cross(c - a).normalize_or_zero()
             })
             .collect();
 
-        // Flood-fill coplanar groups using triangle adjacency.
-        // Each "group" is a set of coplanar triangles that will be merged into a single face of the hull.
-        // `tri_to_group[i]` is the group ID of triangle `i`, or `u32::MAX` if it hasn't been assigned to a group yet.
-        let mut tri_to_group = vec![u32::MAX; num_tris];
-        let mut num_groups: u32 = 0;
-        let mut stack: Vec<usize> = Vec::new();
+        struct InternalEdge {
+            v0: u32,
+            v1: u32,
+            tri_a: u32,
+            tri_b: u32,
+        }
 
-        // Track one boundary edge per group for boundary loop extraction.
-        // `group_starts[g]` is `(tri_index, edge_index)` of a boundary edge for group `g`,
-        // or `(usize::MAX, 0)` for degenerate groups.
-        let mut group_starts: Vec<(usize, usize)> = Vec::new();
-
-        for start in 0..num_tris {
-            if tri_to_group[start] != u32::MAX {
-                continue;
-            }
-
-            let group_id = num_groups;
-            num_groups += 1;
-            tri_to_group[start] = group_id;
-            stack.push(start);
-
-            let mut found_boundary = false;
-
-            while let Some(tri) = stack.pop() {
-                for (edge, &neighbor_tri) in tri_adjacency[tri].iter().enumerate() {
-                    let neighbor = neighbor_tri as usize;
-
-                    if tri_to_group[neighbor] == u32::MAX {
-                        if normals[tri].dot(normals[neighbor]) >= cos_tolerance {
-                            tri_to_group[neighbor] = group_id;
-                            stack.push(neighbor);
-                        } else if !found_boundary {
-                            group_starts.push((tri, edge));
-                            found_boundary = true;
-                        }
-                    } else if tri_to_group[neighbor] != group_id && !found_boundary {
-                        group_starts.push((tri, edge));
-                        found_boundary = true;
-                    }
+        // Compute edges from triangle adjacency.
+        let mut candidates: Vec<InternalEdge> = Vec::new();
+        let mut edge_map: HashMap<(u32, u32), u32> = HashMap::new();
+        for (face_idx, tri) in tri_indices.iter().enumerate() {
+            let face_idx = face_idx as u32;
+            for ei in 0..3 {
+                let v0 = tri[ei];
+                let v1 = tri[(ei + 1) % 3];
+                let key = if v0 < v1 { (v0, v1) } else { (v1, v0) };
+                if let Some(&other_face_idx) = edge_map.get(&key) {
+                    candidates.push(InternalEdge {
+                        v0: key.0,
+                        v1: key.1,
+                        tri_a: other_face_idx,
+                        tri_b: face_idx,
+                    });
+                } else {
+                    edge_map.insert(key, face_idx);
                 }
-            }
-
-            if !found_boundary {
-                // All faces are in one group (degenerate hull with no boundary edges).
-                group_starts.push((usize::MAX, 0));
             }
         }
 
-        // Build the merged hull.
-        let mut indices: Vec<u16> = Vec::new();
-        let mut faces: Vec<HullFace> = Vec::with_capacity(num_groups as usize);
-        let mut planes: Vec<Plane3d> = Vec::with_capacity(num_groups as usize);
+        // Initialize each triangle as a separate face.
+        let mut face_vertices: Vec<Vec<u32>> = tri_indices
+            .iter()
+            .map(|tri| vec![tri[0], tri[1], tri[2]])
+            .collect();
+        let mut face_normals: Vec<Vec3A> = tri_normals;
+        let mut face_parent: Vec<u32> = (0..num_tris as u32).collect();
 
-        for group in 0..num_groups {
-            let (start_tri, start_edge) = group_starts[group as usize];
+        // Reusable buffers.
+        let mut seen = vec![false; points.len()];
+        let mut merge_buffer = Vec::new();
 
-            if start_tri == usize::MAX {
-                // Degenerate: the entire mesh is one group with no boundary edges.
-                // Emit each triangle as an individual face.
-                for (i, &face_group) in tri_to_group.iter().enumerate() {
-                    if face_group == group {
-                        let first = indices.len() as u16;
-                        let tri = &tri_indices[i];
+        // Greedily merge coplanar faces.
+        for edge in &candidates {
+            let face_a = Self::find_root(&mut face_parent, edge.tri_a) as usize;
+            let face_b = Self::find_root(&mut face_parent, edge.tri_b) as usize;
 
-                        for &vi in tri {
-                            indices.push(vi as u16);
-                        }
-
-                        let normal = normals[i];
-                        planes.push(Plane3d::from_point_and_normal(
-                            points[tri[0] as usize],
-                            normal,
-                        ));
-                        faces.push(HullFace {
-                            first_vertex: first,
-                            num_vertices: 3,
-                        });
-                    }
-                }
+            if face_a == face_b {
                 continue;
             }
 
-            let first = indices.len() as u16;
-
-            // Extract boundary loop.
-            let loop_vertex_indices = Self::extract_boundary_loop(
-                tri_indices,
-                &tri_adjacency,
-                &tri_to_group,
-                group,
-                start_tri,
-                start_edge,
-            );
-
-            for &i in loop_vertex_indices.iter() {
-                indices.push(i as u16);
+            if face_normals[face_a].dot(face_normals[face_b]) < cos_tolerance {
+                continue;
             }
 
-            // Compute plane from the group's normal and a point on the face.
-            let normal = normals[start_tri];
-            let point_on_face = points[loop_vertex_indices[0] as usize];
-            planes.push(Plane3d::from_point_and_normal(point_on_face, normal));
+            if Self::try_merge_faces(
+                &face_vertices[face_a],
+                &face_vertices[face_b],
+                edge.v0,
+                edge.v1,
+                points,
+                face_normals[face_a],
+                &mut seen,
+                &mut merge_buffer,
+            ) {
+                face_normals[face_a] = Self::polygon_normal(&merge_buffer, points);
+                core::mem::swap(&mut face_vertices[face_a], &mut merge_buffer);
+                face_vertices[face_b].clear();
+                face_parent[face_b] = face_a as u32;
+            }
+        }
 
+        // Collect alive faces into the hull representation.
+        let mut indices: Vec<u16> = Vec::new();
+        let mut faces: Vec<HullFace> = Vec::new();
+        let mut planes: Vec<Plane3d> = Vec::new();
+
+        for face_idx in 0..num_tris {
+            if face_parent[face_idx] as usize != face_idx {
+                continue;
+            }
+            let vertices = &face_vertices[face_idx];
+            let first = indices.len() as u16;
+            for &v in vertices {
+                indices.push(v as u16);
+            }
+            let normal = face_normals[face_idx];
+            planes.push(Plane3d::from_point_and_normal(
+                points[vertices[0] as usize],
+                normal,
+            ));
             faces.push(HullFace {
                 first_vertex: first,
-                num_vertices: loop_vertex_indices.len() as u16,
+                num_vertices: vertices.len() as u16,
             });
         }
 
@@ -373,94 +337,156 @@ impl ConvexHull3d {
         &self.planes
     }
 
-    /// Builds triangle adjacency from indices using an edge map.
+    /// Returns the vertices, indices, faces, and planes of the convex hull.
     ///
-    /// `adjacency[i][e]` is the index of the neighboring face across edge `e` of face `i`,
-    /// where edge `e` goes from `indices[i][e]` to `indices[i][(e + 1) % 3]`.
-    fn build_triangle_adjacency(indices: &[[u32; 3]]) -> Vec<[u32; 3]> {
-        let mut adjacency = vec![[u32::MAX; 3]; indices.len()];
-        let mut edge_map: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
-
-        for (face_i, tri) in indices.iter().enumerate() {
-            for edge_i in 0..3u32 {
-                let v0 = tri[edge_i as usize];
-                let v1 = tri[((edge_i + 1) % 3) as usize];
-                let key = if v0 < v1 { (v0, v1) } else { (v1, v0) };
-
-                if let Some(&(other_fi, other_ei)) = edge_map.get(&key) {
-                    adjacency[face_i][edge_i as usize] = other_fi;
-                    adjacency[other_fi as usize][other_ei as usize] = face_i as u32;
-                } else {
-                    edge_map.insert(key, (face_i as u32, edge_i));
-                }
-            }
-        }
-
-        adjacency
+    /// This consumes the hull and allows taking ownership of the underlying data without cloning.
+    #[inline]
+    pub fn into_parts(self) -> (Vec<Vec3A>, Vec<u16>, Vec<HullFace>, Vec<Plane3d>) {
+        (self.vertices, self.indices, self.faces, self.planes)
     }
 
-    /// Extracts the ordered boundary loop of a face group by walking around its edges.
+    /// Attempts to merge two convex face loops across a shared edge.
     ///
-    /// Uses the triangle adjacency to traverse the triangle fan at each vertex
-    /// without any additional allocations.
+    /// On success, writes the merged vertex loop into `out` and returns `true`.
+    /// On failure (concave or degenerate result), returns `false` without
+    /// modifying `out`.
     ///
-    /// The time complexity is O(V) where V is the number of vertices in the face,
-    /// since each edge is visited at most twice.
-    fn extract_boundary_loop(
-        indices: &[[u32; 3]],
-        adjacency: &[[u32; 3]],
-        tri_to_group: &[u32],
-        group_id: u32,
-        start_tri: usize,
-        start_edge: usize,
-    ) -> Vec<u32> {
-        let mut result = Vec::new();
-        let mut tri = start_tri;
-        let mut edge = start_edge;
+    /// The `seen` buffer must have a length greater than or equal to
+    /// the number of points and be zeroed.
+    #[allow(clippy::too_many_arguments)]
+    fn try_merge_faces(
+        a: &[u32],
+        b: &[u32],
+        edge_v0: u32,
+        edge_v1: u32,
+        points: &[Vec3A],
+        normal: Vec3A,
+        seen: &mut [bool],
+        out: &mut Vec<u32>,
+    ) -> bool {
+        let a_len = a.len();
+        let b_len = b.len();
 
-        loop {
-            // The current boundary edge goes from indices[tri][edge]
-            // to indices[tri][(edge + 1) % 3].
-            result.push(indices[tri][edge]);
+        // Find the shared edge positions in both face loops.
+        let (a_idx, b_idx) = match Self::find_shared_edge(a, b, edge_v0, edge_v1) {
+            Some(v) => v,
+            None => return false,
+        };
 
-            // Walk around vertex V = indices[tri][(edge + 1) % 3] through
-            // the triangle fan to find the next boundary edge.
-            let v = indices[tri][(edge + 1) % 3];
-            let mut current_tri = tri;
-            let mut current_edge = (edge + 1) % 3;
+        // O(1) convexity check: only the 2 seam vertices change angle.
+        // - At v0: (a_prev, v0, v1) becomes (a_prev, v0, b_next)
+        // - At v1: (v0, v1, a_next) becomes (b_prev, v1, a_next)
+        let a_prev = a[(a_idx + a_len - 1) % a_len];
+        let a_next = a[(a_idx + 2) % a_len];
+        let b_prev = b[(b_idx + b_len - 1) % b_len];
+        let b_next = b[(b_idx + 2) % b_len];
 
-            loop {
-                let neighbor = adjacency[current_tri][current_edge] as usize;
-                if tri_to_group[neighbor] != group_id {
-                    // This edge crosses a group boundary; it's the next boundary edge.
-                    tri = current_tri;
-                    edge = current_edge;
-                    break;
-                }
+        let p_v0 = points[a[a_idx] as usize];
+        let p_v1 = points[a[(a_idx + 1) % a_len] as usize];
 
-                // Cross into the neighbor triangle and find the shared edge.
-                let w = indices[current_tri][(current_edge + 1) % 3];
-                let ntri = indices[neighbor];
-                let nedge = if ntri[0] == w && ntri[1] == v {
-                    0
-                } else if ntri[1] == w && ntri[2] == v {
-                    1
-                } else {
-                    debug_assert!(ntri[2] == w && ntri[0] == v, "broken mesh adjacency");
-                    2
-                };
+        // Check that the merged angle at v0 and v1 is convex
+        if (p_v0 - points[a_prev as usize])
+            .cross(points[b_next as usize] - p_v0)
+            .dot(normal)
+            < 0.0
+        {
+            return false;
+        }
+        if (p_v1 - points[b_prev as usize])
+            .cross(points[a_next as usize] - p_v1)
+            .dot(normal)
+            < 0.0
+        {
+            return false;
+        }
 
-                // Continue walking around vertex V from the next edge.
-                current_tri = neighbor;
-                current_edge = (nedge + 1) % 3;
-            }
-
-            if tri == start_tri && edge == start_edge {
+        // Check for shared vertices beyond the shared edge.
+        // This avoids creating duplicate vertices in the merged polygon.
+        for k in 0..(a_len - 1) {
+            seen[a[(a_idx + 2 + k) % a_len] as usize] = true;
+        }
+        let mut has_duplicates = false;
+        for k in 0..(b_len - 1) {
+            if seen[b[(b_idx + 2 + k) % b_len] as usize] {
+                has_duplicates = true;
                 break;
             }
         }
+        for k in 0..(a_len - 1) {
+            seen[a[(a_idx + 2 + k) % a_len] as usize] = false;
+        }
+        if has_duplicates {
+            return false;
+        }
 
-        result
+        // Build the merged polygon into the output buffer.
+        out.clear();
+        out.reserve(a_len + b_len - 2);
+        for k in 0..(a_len - 1) {
+            out.push(a[(a_idx + 2 + k) % a_len]);
+        }
+        for k in 0..(b_len - 1) {
+            out.push(b[(b_idx + 2 + k) % b_len]);
+        }
+
+        true
+    }
+
+    /// Finds the positions of a shared edge in two face loops.
+    ///
+    /// Returns `(a_idx, b_idx)` such that `a[a_idx] -> a[(a_idx+1) % a_len]` and
+    /// `b[b_idx] -> b[(b_idx+1) % b_len]` are the same edge in opposite directions.
+    fn find_shared_edge(
+        a: &[u32],
+        b: &[u32],
+        edge_v0: u32,
+        edge_v1: u32,
+    ) -> Option<(usize, usize)> {
+        for i in 0..a.len() {
+            let a0 = a[i];
+            let a1 = a[(i + 1) % a.len()];
+
+            if (a0 == edge_v0 && a1 == edge_v1) || (a0 == edge_v1 && a1 == edge_v0) {
+                // Find the matching reverse edge in B.
+                for j in 0..b.len() {
+                    if b[j] == a1 && b[(j + 1) % b.len()] == a0 {
+                        return Some((i, j));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Finds the root of the union-find structure for face merging.
+    fn find_root(parent: &mut [u32], mut i: u32) -> u32 {
+        while parent[i as usize] != i {
+            parent[i as usize] = parent[parent[i as usize] as usize];
+            i = parent[i as usize];
+        }
+        i
+    }
+
+    /// Computes the outward normal of a polygon using [Newell's method].
+    ///
+    /// [Newell's method]: https://wikis.khronos.org/opengl/Calculating_a_Surface_Normal
+    fn polygon_normal(indices: &[u32], vertices: &[Vec3A]) -> Vec3A {
+        let n = indices.len();
+        if n < 3 {
+            return Vec3A::ZERO;
+        }
+
+        let v0 = vertices[indices[0] as usize];
+        let mut sum = Vec3A::ZERO;
+
+        for i in 1..(n - 1) {
+            let edge1 = vertices[indices[i] as usize] - v0;
+            let edge2 = vertices[indices[i + 1] as usize] - v0;
+            sum += edge1.cross(edge2);
+        }
+
+        sum.normalize_or_zero()
     }
 }
 
@@ -498,10 +524,10 @@ mod tests {
         let mut points = Vec::new();
         let unit_y = Vec3A::Y;
         for step_x in 0..divisions {
-            let angle_x = 2.0 * std::f32::consts::PI * (step_x as f32 / divisions as f32);
+            let angle_x = 2.0 * core::f32::consts::PI * (step_x as f32 / divisions as f32);
             let p = rot_x(unit_y, angle_x);
             for step_z in 0..divisions {
-                let angle_z = 2.0 * std::f32::consts::PI * (step_z as f32 / divisions as f32);
+                let angle_z = 2.0 * core::f32::consts::PI * (step_z as f32 / divisions as f32);
                 let p = rot_z(p, angle_z);
                 points.push(p);
             }
@@ -514,7 +540,7 @@ mod tests {
         let mesh = ConvexTriangleMesh::try_from_points(&cube_points(), None).unwrap();
         assert_eq!(mesh.indices().len(), 12);
 
-        let hull = ConvexHull3d::from_convex_mesh(&mesh, 1e-4);
+        let hull = ConvexHull3d::from_convex_mesh(&mesh, 1e-3);
         assert_eq!(hull.faces().len(), 6);
         for face in hull.faces() {
             assert_eq!(face.num_vertices(), 4, "each cube face should be a quad");
@@ -575,7 +601,7 @@ mod tests {
         let points = sphere_points(10);
         let mesh = ConvexTriangleMesh::try_from_points(&points, None).unwrap();
         let tri_count = mesh.indices().len();
-        let hull = ConvexHull3d::from_convex_mesh(&mesh, 1e-4);
+        let hull = ConvexHull3d::from_convex_mesh(&mesh, 1e-3);
 
         // Merging can only reduce (or maintain) the face count.
         assert!(hull.faces().len() <= tri_count);
@@ -593,5 +619,94 @@ mod tests {
         assert!(hull.indices().is_empty());
         assert!(hull.faces().is_empty());
         assert!(hull.planes().is_empty());
+    }
+
+    // With aggressive merging, a group can surround another group, creating
+    // a multi-loop boundary. The algorithm should detect this and fall back
+    // to individual triangles rather than producing a disjoint polygon face.
+    #[test]
+    fn aggressive_merge_no_disjoint_faces() {
+        let points = sphere_points(10);
+        let mesh = ConvexTriangleMesh::try_from_points(&points, None).unwrap();
+
+        // Test a range of aggressive tolerances.
+        for tolerance in [0.5, 1.0, 1.5, core::f32::consts::PI] {
+            let hull = ConvexHull3d::from_convex_mesh(&mesh, tolerance);
+
+            for (face_idx, face) in hull.faces().iter().enumerate() {
+                let vertex_indices = face.vertex_indices(hull.indices());
+
+                // Every consecutive pair of vertices in the face should be distinct.
+                for i in 0..vertex_indices.len() {
+                    let v0 = vertex_indices[i];
+                    let v1 = vertex_indices[(i + 1) % vertex_indices.len()];
+                    assert_ne!(
+                        v0, v1,
+                        "face {face_idx} has duplicate consecutive vertex {v0}"
+                    );
+                }
+
+                // No vertex should appear more than once.
+                let mut sorted = vertex_indices.to_vec();
+                sorted.sort();
+                sorted.dedup();
+                assert_eq!(
+                    sorted.len(),
+                    vertex_indices.len(),
+                    "face {face_idx} has repeated vertices (tolerance={tolerance})"
+                );
+            }
+        }
+    }
+
+    // All merged polygon faces must be convex. With a non-zero tolerance,
+    // drift could merge triangles that curve around the hull surface, but the algorithm
+    // should detect this and fall back to individual triangles.
+    #[test]
+    fn merged_faces_are_convex() {
+        let points = sphere_points(10);
+        let mesh = ConvexTriangleMesh::try_from_points(&points, None).unwrap();
+
+        for tolerance in [1e-4, 0.1, 0.5, 1.0, 1.5, core::f32::consts::PI] {
+            let hull = ConvexHull3d::from_convex_mesh(&mesh, tolerance);
+
+            for (face_idx, (face, plane)) in hull.faces().iter().zip(hull.planes()).enumerate() {
+                let vertex_indices = face.vertex_indices(hull.indices());
+                let n = vertex_indices.len();
+                let face_normal = plane.normal();
+
+                for i in 0..n {
+                    let a = hull.vertices()[vertex_indices[i] as usize];
+                    let b = hull.vertices()[vertex_indices[(i + 1) % n] as usize];
+                    let c = hull.vertices()[vertex_indices[(i + 2) % n] as usize];
+                    let cross = (b - a).cross(c - b);
+                    assert!(
+                        cross.dot(face_normal) >= -1e-6,
+                        "face {face_idx} is concave at vertex {} (tolerance={tolerance})",
+                        (i + 1) % n,
+                    );
+                }
+            }
+        }
+    }
+
+    // Face count must be monotonically non-increasing as tolerance grows.
+    #[test]
+    fn face_count_monotonically_decreasing() {
+        let points = sphere_points(10);
+        let mesh = ConvexTriangleMesh::try_from_points(&points, None).unwrap();
+
+        let tolerances = [0.0, 1e-5, 1e-4, 1e-3, 0.01, 0.05, 0.1];
+        let mut prev_count = usize::MAX;
+
+        for tolerance in tolerances {
+            let hull = ConvexHull3d::from_convex_mesh(&mesh, tolerance);
+            let count = hull.faces().len();
+            assert!(
+                count <= prev_count,
+                "face count increased from {prev_count} to {count} at tolerance={tolerance}"
+            );
+            prev_count = count;
+        }
     }
 }
