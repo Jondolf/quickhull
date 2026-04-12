@@ -28,7 +28,7 @@ use glam::Vec2;
 /// let hull = ConvexHull2d::from_points(&points);
 ///
 /// // Get the points of the convex hull in counterclockwise order.
-/// let points = hull.points();
+/// let points = hull.into_vertices();
 ///
 /// assert_eq!(
 ///     points,
@@ -42,7 +42,8 @@ use glam::Vec2;
 /// );
 /// ```
 pub struct ConvexHull2d {
-    points: Vec<Vec2>,
+    /// The vertices of the convex hull in counterclockwise order.
+    vertices: Vec<Vec2>,
 }
 
 impl ConvexHull2d {
@@ -119,10 +120,10 @@ impl ConvexHull2d {
         Self::hull_set(min, max, points, &mut hull);
         hull.push(min);
 
-        Self { points: hull }
+        Self { vertices: hull }
     }
 
-    /// Computes the indices of the convex hull points within the original point set.
+    /// Computes the indices of the convex hull vertices within the original point set.
     ///
     /// The returned indices are in counterclockwise order.
     #[inline]
@@ -130,7 +131,7 @@ impl ConvexHull2d {
         // TODO: Optimize this.
         // TODO: Handle duplicate points.
         let hull = Self::from_points(points);
-        hull.points()
+        hull.vertices()
             .iter()
             .map(|hull_point| {
                 points
@@ -141,19 +142,18 @@ impl ConvexHull2d {
             .collect()
     }
 
-    /// Returns the points of the convex hull in counterclockwise order.
-    ///
-    /// This consumes the convex hull. If you want a reference to the points,
-    /// consider using [`points_ref`](Self::points_ref) instead.
+    /// Returns the vertices of the convex hull in counterclockwise order.
     #[inline]
-    pub fn points(self) -> Vec<Vec2> {
-        self.points
+    pub fn vertices(&self) -> &[Vec2] {
+        &self.vertices
     }
 
-    /// Returns a reference to the points of the convex hull in counterclockwise order.
+    /// Returns the vertices of the convex hull in counterclockwise order.
+    ///
+    /// This consumes the hull and allows taking ownership of the underlying data without cloning.
     #[inline]
-    pub fn points_ref(&self) -> &[Vec2] {
-        &self.points
+    pub fn into_vertices(self) -> Vec<Vec2> {
+        self.vertices
     }
 
     /// Constructs the convex hull for a point set of size 3 or less.
@@ -181,7 +181,7 @@ impl ConvexHull2d {
             points.swap(1, 2);
         }
 
-        Self { points }
+        Self { vertices: points }
     }
 
     // Recursively computes the convex hull of a subset of points.
@@ -322,7 +322,7 @@ mod test {
             vec2(0.0, 10.0),
             vec2(-10.0, 0.0),
         ];
-        let result = ConvexHull2d::from_points(&points).points();
+        let result = ConvexHull2d::from_points(&points).into_vertices();
         assert_eq!(result, expected);
     }
 
@@ -342,7 +342,7 @@ mod test {
             vec2(1.0, 2.0),
             vec2(0.0, 1.0),
         ];
-        let result = ConvexHull2d::from_points(&points).points();
+        let result = ConvexHull2d::from_points(&points).into_vertices();
         assert_eq!(result, expected);
     }
 
@@ -350,7 +350,7 @@ mod test {
     fn trivial_collinear() {
         let points = vec![vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(2.0, 2.0)];
         let expected = vec![vec2(0.0, 0.0), vec2(2.0, 2.0)];
-        let result = ConvexHull2d::from_points(&points).points();
+        let result = ConvexHull2d::from_points(&points).into_vertices();
         assert_eq!(result, expected);
     }
 
@@ -369,7 +369,7 @@ mod test {
             vec2(0.0, 2.0),
             vec2(0.0, 0.0),
         ];
-        let result = ConvexHull2d::from_points(&points).points();
+        let result = ConvexHull2d::from_points(&points).into_vertices();
         assert_eq!(result, expected);
     }
 }
