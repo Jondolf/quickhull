@@ -33,6 +33,9 @@ use glam::Vec3A;
 ///     Vec3A::new(1.0, 0.0, 0.0),
 ///     Vec3A::new(0.0, 1.0, 0.0),
 ///     Vec3A::new(0.0, 0.0, 1.0),
+///     // Additional internal points that should not affect the hull
+///     Vec3A::new(0.1, 0.1, 0.1),
+///     Vec3A::new(0.25, 0.25, 0.25),
 /// ];
 ///
 /// // No limit on the number of iterations.

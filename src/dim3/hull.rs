@@ -31,6 +31,9 @@ use crate::{collections::HashMap, ConvexHull3dError, ConvexTriangleMesh};
 ///     Vec3A::new(-1.0,  1.0, -1.0),
 ///     Vec3A::new(-1.0, -1.0,  1.0),
 ///     Vec3A::new(-1.0, -1.0, -1.0),
+///     // Additional internal points that should not affect the hull
+///     Vec3A::new(0.0, 0.0, 0.0),
+///     Vec3A::new(0.5, 0.5, 0.5),
 /// ];
 ///
 /// let settings = ConvexHull3dSettings {
