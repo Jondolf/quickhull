@@ -1,4 +1,4 @@
-//! Demonstrates computing and rendering the convex hulls of various 3D shapes.
+//! Demonstrates computing and rendering the [`ConvexTriangleMesh`] of various 3D shapes.
 
 use std::f32::consts::PI;
 
@@ -10,7 +10,7 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
-use quickhull::ConvexHull3d;
+use quickhull::ConvexTriangleMesh;
 
 fn main() {
     App::new()
@@ -197,12 +197,12 @@ fn render_convex_hulls(
             .collect::<Vec<_>>();
 
         let Ok(hull) =
-            ConvexHull3d::try_from_points(&positions, None).map_err(|e| warn!("{:?}", e))
+            ConvexTriangleMesh::try_from_points(&positions, None).map_err(|e| warn!("{:?}", e))
         else {
             continue;
         };
 
-        let (vertices, indices) = hull.vertices_indices();
+        let (vertices, indices) = hull.into_parts();
 
         for handle in hull_query.iter_many(children) {
             let Some(mesh) = meshes.get_mut(handle) else {

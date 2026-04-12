@@ -1,4 +1,4 @@
-//! Demonstrates computing the convex hull of the Utah teapot model.
+//! Demonstrates computing the [`ConvexTriangleMesh`] of the Utah teapot model.
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -8,16 +8,11 @@ use bevy::{
     prelude::*,
     scene::SceneInstanceReady,
 };
+use quickhull::ConvexTriangleMesh;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "App".to_string(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(DefaultPlugins)
         .add_observer(on_scene_ready)
         .add_systems(Startup, setup)
         .add_systems(Update, rotate)
@@ -89,7 +84,7 @@ fn on_scene_ready(
     }
 
     // Compute the convex hull.
-    let hull = match quickhull::ConvexHull3d::try_from_points(&points, None) {
+    let hull = match ConvexTriangleMesh::try_from_points(&points, None) {
         Ok(hull) => hull,
         Err(e) => {
             error!("Failed to compute convex hull: {e}");
@@ -97,7 +92,7 @@ fn on_scene_ready(
         }
     };
 
-    let (vertices, indices) = hull.vertices_indices();
+    let (vertices, indices) = hull.into_parts();
     let mesh_vertices: Vec<[f32; 3]> = vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
     let mesh_indices: Vec<u32> = indices.iter().flatten().cloned().collect();
 

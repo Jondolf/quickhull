@@ -1,4 +1,7 @@
-use crate::dim3::{triangle_face::TriangleFace, EdgeIndex, FaceId};
+use super::{
+    triangle_face::{EdgeIndex, TriangleFace},
+    FaceId,
+};
 
 pub fn validate_face_connectivity(face_id: FaceId, faces: &[TriangleFace]) {
     let face = &faces[face_id.index()];

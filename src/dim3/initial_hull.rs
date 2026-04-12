@@ -1,16 +1,16 @@
 use approx::relative_ne;
 use glam::{Vec2, Vec3, Vec3A};
 use glam_matrix_extras::{SymmetricEigen3, SymmetricMat3};
+use thiserror::Error;
 
 #[cfg(debug_assertions)]
-use crate::dim3::validation::validate_face_connectivity;
-use crate::{
-    dim3::{
-        triangle_face::{PointId, TriangleFace},
-        FaceId,
-    },
-    ConvexHull2d, ConvexHull3dError,
+use super::triangle_mesh::validation::validate_face_connectivity;
+use super::triangle_mesh::{
+    triangle_face::{PointId, TriangleFace},
+    FaceId,
 };
+use super::ConvexHull3dError;
+use crate::dim2::ConvexHull2d;
 
 /// The initial convex hull structure built from the input points.
 pub enum InitialConvexHull3d {
@@ -20,6 +20,16 @@ pub enum InitialConvexHull3d {
     Polyhedron(Vec<TriangleFace>),
 }
 
+/// An error returned during [`InitialConvexHull3d`] construction.
+#[derive(Error, Debug, Clone, PartialEq)]
+pub enum InitialConvexHull3dError {
+    #[error("Could not find initial segment points.")]
+    MissingSegmentPoints,
+    #[error("Could not find initial triangle point.")]
+    MissingTrianglePoint,
+}
+
+/// Computes the covariance matrix of the given points.
 fn cov(points: &[Vec3A]) -> SymmetricMat3 {
     // Compute the centroid.
     let centroid = points.iter().sum::<Vec3A>() / points.len() as f32;
@@ -60,7 +70,12 @@ fn degenerate_segment_hull(direction: Vec3A, points: &[Vec3A]) -> (Vec<Vec3A>, V
     (vec![min_point, max_point], vec![[0, 1, 0], [1, 0, 0]])
 }
 
-pub fn init_tetrahedron(
+/// Computes the initial convex hull structure from the input points.
+///
+/// The initial hull is a tetrahedron formed by four points that are not coplanar, if such points exist.
+/// If the points are coplanar, collinear, or coincident, the initial hull will be a triangle, line segment,
+/// or point, respectively.
+pub fn compute_initial_hull(
     points: &[Vec3A],
     normalized_points: &[Vec3A],
     undecided_points: &mut Vec<PointId>,
