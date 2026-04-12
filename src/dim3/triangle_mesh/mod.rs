@@ -16,7 +16,10 @@ use glam::Vec3A;
 ///
 /// This can be thought of as a shrink wrapping of a 3D object.
 ///
+/// For a more advanced representation that supports polygonal faces, see [`ConvexHull3d`].
+///
 /// [convex hull]: https://en.wikipedia.org/wiki/Convex_hull
+/// [`ConvexHull3d`]: super::hull::ConvexHull3d
 ///
 /// # Example
 ///

@@ -34,8 +34,8 @@ use crate::{collections::HashMap, ConvexHull3dError, ConvexTriangleMesh};
 /// ];
 ///
 /// let settings = ConvexHull3dSettings {
-///     // Merge faces with normals within 1e-4 radians of each other
-///     coplanarity_tolerance: 1e-4,
+///     // Merge faces with normals within 3 degrees of each other
+///     coplanarity_dot_tolerance: 0.9986295, // cos(3 degrees)
 ///     // Allow up to 10,000 iterations for hull construction (should not be hit in practice)
 ///     max_iterations: 10_000,
 /// };
@@ -101,11 +101,12 @@ impl HullFace {
 /// Settings for constructing a [`ConvexHull3d`].
 #[derive(Clone, Copy, Debug)]
 pub struct ConvexHull3dSettings {
-    /// The maximum angle (in radians) between the normals of two adjacent triangle faces
-    /// for them to be considered coplanar and merged.
+    /// The maximum dot product between the normals of two adjacent triangle faces
+    /// for them to be considered coplanar and merged. This is equivalent to the cosine
+    /// of the angle between the normals.
     ///
-    /// **Default:** `1e-4`
-    pub coplanarity_tolerance: f32,
+    /// **Default:** `cos(3 degrees) ≈ 0.9986295`
+    pub coplanarity_dot_tolerance: f32,
 
     /// The maximum number of iterations for the Quickhull algorithm.
     ///
@@ -118,7 +119,7 @@ pub struct ConvexHull3dSettings {
 impl Default for ConvexHull3dSettings {
     fn default() -> Self {
         Self {
-            coplanarity_tolerance: 1e-4,
+            coplanarity_dot_tolerance: 0.9986295, // cos(3 degrees)
             max_iterations: 10_000,
         }
     }
@@ -141,15 +142,16 @@ impl ConvexHull3d {
         let mesh = ConvexTriangleMesh::try_from_points(points, Some(settings.max_iterations))?;
         Ok(Self::from_convex_mesh(
             &mesh,
-            settings.coplanarity_tolerance,
+            settings.coplanarity_dot_tolerance,
         ))
     }
 
     /// Creates a [`ConvexHull3d`] from a [`ConvexTriangleMesh`] by merging
     /// coplanar triangular faces into polygonal faces.
     ///
-    /// `coplanarity_tolerance` is the maximum angle (in radians) between the normals
+    /// `coplanarity_dot_tolerance` is the maximum dot product between the normals
     /// of two adjacent triangle faces for them to be considered coplanar and merged.
+    /// This is equivalent to the cosine of the angle between the normals.
     ///
     /// # Example
     ///
@@ -173,14 +175,19 @@ impl ConvexHull3d {
     /// let mesh = ConvexTriangleMesh::try_from_points(&points, None).unwrap();
     /// assert_eq!(mesh.indices().len(), 12);
     ///
+    /// // cos(3 degrees)
+    /// let coplanarity_dot_tolerance = 0.9986295;
+    ///
     /// // Construct a convex hull with polygonal faces from the triangle mesh,
-    /// // merging triangles with normals within 1e-4 radians of each other.
-    /// let hull = ConvexHull3d::from_convex_mesh(&mesh, 1e-4);
+    /// // merging triangles with normals within the specified tolerance.
+    /// let hull = ConvexHull3d::from_convex_mesh(&mesh, coplanarity_dot_tolerance);
     ///
     /// // The cube's hull should have 8 vertices and 6 quad faces after merging.
     /// assert_eq!(hull.faces().len(), 6);
     /// ```
-    pub fn from_convex_mesh(mesh: &ConvexTriangleMesh, coplanarity_tolerance: f32) -> Self {
+    pub fn from_convex_mesh(mesh: &ConvexTriangleMesh, mut coplanarity_dot_tolerance: f32) -> Self {
+        coplanarity_dot_tolerance = coplanarity_dot_tolerance.clamp(0.0, 1.0);
+
         let tri_indices = mesh.indices();
         let points = mesh.vertices();
 
@@ -188,9 +195,6 @@ impl ConvexHull3d {
             return ConvexHull3d::default();
         }
 
-        let cos_tolerance = coplanarity_tolerance
-            .clamp(0.0, core::f32::consts::PI)
-            .cos();
         let num_tris = tri_indices.len();
 
         // Compute triangle normals.
@@ -256,7 +260,7 @@ impl ConvexHull3d {
                 continue;
             }
 
-            if face_normals[face_a].dot(face_normals[face_b]) < cos_tolerance {
+            if face_normals[face_a].dot(face_normals[face_b]) < coplanarity_dot_tolerance {
                 continue;
             }
 
