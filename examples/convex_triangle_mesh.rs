@@ -118,7 +118,7 @@ fn setup(
 
     commands.spawn((
         PointLight {
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             intensity: 10_000_000.,
             range: 100.0,
             shadow_depth_bias: 0.2,
@@ -205,7 +205,7 @@ fn render_convex_hulls(
         let (vertices, indices) = hull.into_parts();
 
         for handle in hull_query.iter_many(children) {
-            let Some(mesh) = meshes.get_mut(handle) else {
+            let Some(mut mesh) = meshes.get_mut(handle) else {
                 continue;
             };
 

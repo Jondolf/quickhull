@@ -11,8 +11,8 @@ categories = ["algorithms", "mathematics", "game-development"]
 
 [dependencies]
 # Math
-glam = "0.30"
-glam_matrix_extras = { git = "https://github.com/Jondolf/glam_matrix_extras", rev = "bc247a4" }
+glam = "0.32"
+glam_matrix_extras = { git = "https://github.com/Jondolf/glam_matrix_extras" }
 robust = "1.1.0"
 approx = "0.5"
 thiserror = "2.0"
@@ -22,8 +22,8 @@ foldhash = "0.2"
 hashbrown = "0.17"
 
 [dev-dependencies]
-bevy = "0.17"
-rand = "0.9"
+bevy = "0.19"
+rand = "0.10"
 
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]

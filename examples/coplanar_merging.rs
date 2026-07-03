@@ -36,7 +36,7 @@ struct CoplanarityToleranceText;
 fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, assets: Res<AssetServer>) {
     // Spawn the Utah teapot
     commands.spawn((
-        SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("utah_teapot.glb"))),
+        WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("utah_teapot.glb"))),
         Transform::from_xyz(-2.5, 0.0, 0.0).with_scale(Vec3::splat(1.0)),
         Rotating,
         // This will be filled by the `on_scene_ready` observer
@@ -80,7 +80,7 @@ fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, assets: Res<A
         PointLight {
             intensity: 50_000_000.0,
             range: 100.0,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             ..default()
         },
         Transform::from_xyz(1.0, 6.0, 7.0),

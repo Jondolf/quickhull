@@ -6,7 +6,7 @@ use bevy::{
     core_pipeline::tonemapping::Tonemapping,
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
-    scene::SceneInstanceReady,
+    world_serialization::WorldInstanceReady,
 };
 use quickhull::ConvexTriangleMesh;
 
@@ -25,7 +25,7 @@ struct Rotating;
 fn setup(mut commands: Commands, assets: ResMut<AssetServer>) {
     // Spawn the Utah teapot
     commands.spawn((
-        SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("utah_teapot.glb"))),
+        WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("utah_teapot.glb"))),
         Transform::from_xyz(-2.5, 0.0, 0.0).with_scale(Vec3::splat(1.0)),
         Rotating,
     ));
@@ -35,7 +35,7 @@ fn setup(mut commands: Commands, assets: ResMut<AssetServer>) {
         PointLight {
             intensity: 50_000_000.0,
             range: 100.0,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             ..default()
         },
         Transform::from_xyz(1.0, 6.0, 7.0),
@@ -63,7 +63,7 @@ fn rotate(mut query: Query<&mut Transform, With<Rotating>>, time: Res<Time>) {
 }
 
 fn on_scene_ready(
-    ready: On<SceneInstanceReady>,
+    ready: On<WorldInstanceReady>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
