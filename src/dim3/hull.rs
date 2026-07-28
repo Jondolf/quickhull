@@ -436,6 +436,21 @@ impl ConvexHull3d {
             out.push(b[(b_idx + 2 + k) % b_len]);
         }
 
+        // Verify the whole loop against its own normal before accepting the merge.
+        let merged_normal = Self::polygon_normal(out, points);
+        if merged_normal == Vec3A::ZERO {
+            return false;
+        }
+        let n = out.len();
+        for i in 0..n {
+            let p0 = points[out[i] as usize];
+            let p1 = points[out[(i + 1) % n] as usize];
+            let p2 = points[out[(i + 2) % n] as usize];
+            if (p1 - p0).cross(p2 - p1).dot(merged_normal) < 0.0 {
+                return false;
+            }
+        }
+
         true
     }
 

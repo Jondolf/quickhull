@@ -203,7 +203,7 @@ impl TriangleFace {
             let p0 = points[self.points[i].index()];
             let point = points[point_id.index()];
             let distance = (point - p0).dot(self.normal);
-            if distance >= 0.0 {
+            if distance > 0.0 {
                 return true;
             }
         }
