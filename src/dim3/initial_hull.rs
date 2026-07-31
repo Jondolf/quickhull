@@ -70,6 +70,42 @@ fn degenerate_segment_hull(direction: Vec3A, points: &[Vec3A]) -> (Vec<Vec3A>, V
     (vec![min_point, max_point], vec![[0, 1, 0], [1, 0, 0]])
 }
 
+fn planar_hull(
+    points: &[Vec3A],
+    normalized_points: &[Vec3A],
+    eig: &SymmetricEigen3,
+) -> InitialConvexHull3d {
+    // The hull is a triangle.
+    // Project the points onto the plane defined by the two largest eigenvectors.
+    let u = Vec3A::from(eig.eigenvectors.y_axis.normalize());
+    let v = Vec3A::from(eig.eigenvectors.z_axis.normalize());
+
+    let mut subspace_points: Vec<Vec2> = Vec::with_capacity(normalized_points.len());
+    for p in normalized_points {
+        subspace_points.push(Vec2::new(p.dot(u), p.dot(v)));
+    }
+
+    // Compute the 2D convex hull of the projected points.
+    let hull_2d_indices = ConvexHull2d::indices_from_points(&subspace_points);
+
+    // Triangulate the 2D hull to form faces.
+    let num_points = hull_2d_indices.len();
+    let mut faces = Vec::with_capacity(2 * num_points - 4);
+
+    for i in 1..(num_points - 1) {
+        faces.push([0, i as u32, (i + 1) as u32]);
+    }
+
+    // Note: The bottom face uses a different starting point to avoid bad topology
+    //       where an edge is shared by more than two faces.
+    let end = num_points - 1;
+    for i in 0..(end - 1) {
+        faces.push([end as u32, i as u32 + 1, i as u32]);
+    }
+
+    InitialConvexHull3d::Triangle(hull_2d_indices.iter().map(|&i| points[i]).collect(), faces)
+}
+
 /// Computes the initial convex hull structure from the input points.
 ///
 /// The initial hull is a tetrahedron formed by four points that are not coplanar, if such points exist.
@@ -78,7 +114,6 @@ fn degenerate_segment_hull(direction: Vec3A, points: &[Vec3A]) -> (Vec<Vec3A>, V
 pub fn compute_initial_hull(
     points: &[Vec3A],
     normalized_points: &[Vec3A],
-    undecided_points: &mut Vec<PointId>,
 ) -> Result<InitialConvexHull3d, ConvexHull3dError> {
     // Compute the eigen decomposition to see if the points are on a lower-dimensional subspace.
     let cov = cov(normalized_points);
@@ -104,40 +139,7 @@ pub fn compute_initial_hull(
             let (vertices, faces) = degenerate_segment_hull(direction, points);
             Ok(InitialConvexHull3d::Segment(vertices, faces))
         }
-        2 => {
-            // The hull is a triangle.
-            // Project the points onto the plane defined by the two largest eigenvectors.
-            let u = Vec3A::from(eig.eigenvectors.y_axis.normalize());
-            let v = Vec3A::from(eig.eigenvectors.z_axis.normalize());
-
-            let mut subspace_points: Vec<Vec2> = Vec::with_capacity(normalized_points.len());
-            for p in normalized_points {
-                subspace_points.push(Vec2::new(p.dot(u), p.dot(v)));
-            }
-
-            // Compute the 2D convex hull of the projected points.
-            let hull_2d_indices = ConvexHull2d::indices_from_points(&subspace_points);
-
-            // Triangulate the 2D hull to form faces.
-            let num_points = hull_2d_indices.len();
-            let mut faces = Vec::with_capacity(2 * num_points - 4);
-
-            for i in 1..(num_points - 1) {
-                faces.push([0, i as u32, (i + 1) as u32]);
-            }
-
-            // Note: The bottom face uses a different starting point to avoid bad topology
-            //       where an edge is shared by more than two faces.
-            let end = num_points - 1;
-            for i in 0..(end - 1) {
-                faces.push([end as u32, i as u32 + 1, i as u32]);
-            }
-
-            Ok(InitialConvexHull3d::Triangle(
-                hull_2d_indices.iter().map(|&i| points[i]).collect(),
-                faces,
-            ))
-        }
+        2 => Ok(planar_hull(points, normalized_points, &eig)),
         3 => {
             // The hull is a tetrahedron.
 
@@ -193,29 +195,50 @@ pub fn compute_initial_hull(
                 ));
             }
 
-            // Create two faces with opposite normals.
-            let mut face1 = TriangleFace::from_triangle(
-                normalized_points,
-                [point_ids[0], point_ids[1], point_ids[2]],
-            );
-            let mut face2 = TriangleFace::from_triangle(
-                normalized_points,
-                [point_ids[1], point_ids[0], point_ids[2]],
-            );
+            // The fourth vertex is the one furthest from the plane of the first three.
+            let base = normalized_points[point_ids[0].index()];
+            let plane_normal = (normalized_points[point_ids[1].index()] - base)
+                .cross(normalized_points[point_ids[2].index()] - base)
+                .normalize_or_zero();
 
-            // Link the two faces as neighbors.
-            face1.set_neighbors(1, 1, 1, 0, 2, 1);
-            face2.set_neighbors(0, 0, 0, 0, 2, 1);
+            let mut furthest: f32 = 0.0;
+            for (i, point) in normalized_points.iter().enumerate() {
+                let distance = plane_normal.dot(*point - base);
+                if distance.abs() > furthest.abs() {
+                    furthest = distance;
+                    point_ids[3] = PointId(i as u32);
+                }
+            }
 
-            let mut faces = Vec::with_capacity(4);
-            faces.push(face1);
-            faces.push(face2);
+            if point_ids[3] == PointId::PLACEHOLDER || furthest.abs() < 1e-7 {
+                // The points are coplanar, so we return a planar hull instead.
+                return Ok(planar_hull(points, normalized_points, &eig));
+            }
 
-            // Add outside points to the two faces.
+            if furthest > 0.0 {
+                point_ids.swap(0, 1);
+            }
+
+            let [a, b, c, d] = point_ids;
+            let mut faces = vec![
+                TriangleFace::from_triangle(normalized_points, [a, b, c]),
+                TriangleFace::from_triangle(normalized_points, [a, d, b]),
+                TriangleFace::from_triangle(normalized_points, [b, d, c]),
+                TriangleFace::from_triangle(normalized_points, [c, d, a]),
+            ];
+
+            // Link the faces as neighbors.
+            faces[0].set_neighbors(1, 2, 3, 2, 2, 2);
+            faces[1].set_neighbors(3, 2, 0, 1, 0, 0);
+            faces[2].set_neighbors(1, 3, 0, 1, 0, 1);
+            faces[3].set_neighbors(2, 1, 0, 1, 0, 2);
+
+            // Add outside points to the four faces.
             for (i, &point) in normalized_points.iter().enumerate() {
                 if point == normalized_points[point_ids[0].index()]
                     || point == normalized_points[point_ids[1].index()]
                     || point == normalized_points[point_ids[2].index()]
+                    || point == normalized_points[point_ids[3].index()]
                 {
                     continue;
                 }
@@ -237,18 +260,15 @@ pub fn compute_initial_hull(
 
                 if furthest_face != FaceId::PLACEHOLDER {
                     faces[furthest_face.index()].try_add_outside_point(point_id, normalized_points);
-                } else {
-                    undecided_points.push(point_id);
                 }
-
-                // If none of the faces can be seen from the point, it is implicitly removed.
             }
 
             // TODO: Make this optional behind a feature flag or something.
             #[cfg(debug_assertions)]
             {
-                validate_face_connectivity(FaceId(0), &faces);
-                validate_face_connectivity(FaceId(1), &faces);
+                for id in 0..faces.len() as u32 {
+                    validate_face_connectivity(FaceId(id), &faces);
+                }
             }
 
             Ok(InitialConvexHull3d::Polyhedron(faces))

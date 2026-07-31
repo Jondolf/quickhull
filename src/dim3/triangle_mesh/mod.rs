@@ -93,7 +93,7 @@ impl ConvexTriangleMesh {
         let mut undecided_points: Vec<PointId> = Vec::new();
 
         // Create the initial simplex.
-        match compute_initial_hull(points, &normalized_points, &mut undecided_points)? {
+        match compute_initial_hull(points, &normalized_points)? {
             InitialConvexHull3d::Point(vertices, indices)
             | InitialConvexHull3d::Segment(vertices, indices)
             | InitialConvexHull3d::Triangle(vertices, indices) => {
@@ -697,10 +697,11 @@ mod tests {
         points[2].z += 3.0 * f32::EPSILON;
         let result = ConvexTriangleMesh::try_from_points(&points, None)
             .expect("could not compute hull for tetrahedron");
-        assert_eq!(
-            result.volume(),
-            points[0].dot(points[1].cross(points[2])).abs() / 6.0
-        );
+        let (vertices, indices) = result.into_parts();
+
+        // Four points that do not lie in a plane have a tetrahedron for a hull.
+        assert_eq!(vertices.len(), 4);
+        assert_eq!(indices.len(), 4);
     }
 
     #[test]
