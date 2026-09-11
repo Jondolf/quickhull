@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Joona Aalto <jondolf.dev@gmail.com>"]
 description = "Quickhull algorithm for computing convex hulls"
+repository = "https://github.com/Jondolf/quickhull"
 readme = "README.md"
 keywords = ["convex", "hull", "geo", "geometry"]
 categories = ["algorithms", "mathematics", "game-development"]
